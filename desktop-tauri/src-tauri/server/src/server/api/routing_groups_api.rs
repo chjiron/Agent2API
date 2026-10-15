@@ -329,8 +329,18 @@ fn candidate_models(store: &crate::server::core::account_store::AccountStore) ->
         .filter(|item| item.get("scoped").and_then(Value::as_bool) != Some(true))
         .map(|mut item| {
             let key = crate::server::core::models::merge_key(&crate::server::core::models::model_id(&item));
+            // 面板画「自动组」徽标用的标记：`/v1/models` 是通用接口不能加字段，
+            // 自动组标识做在 name 的 `auto · ` 前缀上（见 view::public_builtin_items）；
+            // 这份候选表是**我们自己的面板 API**，把前缀翻回布尔给界面用。
+            let auto = item
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.starts_with("auto · "));
             if let Some(object) = item.as_object_mut() {
                 object.insert("mergeKey".to_string(), Value::String(key));
+                if auto {
+                    object.insert("autoGroup".to_string(), Value::Bool(true));
+                }
             }
             item
         })

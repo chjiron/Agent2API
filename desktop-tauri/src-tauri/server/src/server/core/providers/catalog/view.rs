@@ -128,16 +128,21 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
             let mut object = item.as_object_mut()?;
             object.insert("providers".to_string(), Value::Array(ids));
             object.insert("providerLabels".to_string(), Value::Array(labels));
-            // 展示名 = 第一家认领者的对外名（与上面归一化补集的取材同一份）
+            // 自动跨家组的标识走 **name 前缀**（`auto · 名字`），不加新字段：
+            // /v1/models 是通用接口（所有智能体都在读），结构必须保持稳定；
+            // 而客户端界面显示的就是 name —— 前缀既看得见又零成本兼容。
+            // id 不动（那是请求名）。判据与路由解析（resolve_for）同源：
+            // 用户组先接（接住了就不再标「自动」）、否则看归一化键是否 ≥2 家。
             if let (Some(keyed), Some(display)) = (keyed.as_ref(), vendors.first().map(|(_, name)| name.clone())) {
                 let taken = user_groups.iter().any(|group| group.matches_model(&display));
                 let key = crate::server::core::models::merge_key(&display);
                 if !taken && keyed.by_key.get(&key).is_some_and(|v| v.len() >= 2) {
-                    // 布尔而不是 id 串：这个字段的唯一用途是**让人和客户端界面
-                    // 认出「这是自动跨家组的一员」**（≥2 家提供归一化同名模型，
-                    // 选它 = 某家限流时自动换别家）。id 串对选择界面毫无信息量
-                    // （用户实测反馈：标识要可见可懂，不是机器编号）。
-                    object.insert("autoGroup".to_string(), Value::Bool(true));
+                    let base = object
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                        .unwrap_or(display);
+                    object.insert("name".to_string(), Value::String(format!("auto · {base}")));
                 }
             }
             Some((owner, item))
@@ -180,15 +185,15 @@ fn append_scoped_items(data: &mut Vec<Value>) {
                     .and_then(Value::as_str)
                     .unwrap_or(&id)
                     .to_string();
+                // 限定名钉死一家、不走自动跨家组 —— 聚合条目 name 上的
+                // `auto · ` 前缀在这里要去掉，不然会读成「WorkBuddy · auto · …」
+                let base = base.strip_prefix("auto · ").unwrap_or(&base).to_string();
                 object.insert("id".to_string(), Value::String(scoped));
                 object.insert("name".to_string(), Value::String(format!("{label} · {base}")));
                 object.insert("owned_by".to_string(), Value::String(provider.to_string()));
                 object.insert("scoped".to_string(), Value::Bool(true));
                 object.remove("providers");
                 object.remove("providerLabels");
-                // 限定名钉死一家，自动组不参与这个名字的选路（resolve_for 对
-                // 限定名直接返回 None）—— 副本上不该残留聚合条目的组标识
-                object.remove("autoGroup");
             }
             additions.push(copy);
         }
