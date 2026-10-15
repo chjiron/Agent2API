@@ -800,10 +800,12 @@
 
 .rp-group-head:first-child { padding-top: 4px; }
 
-/* 行：圆形勾选 → 名字（弹性截断）→ 徽标 → 来源头像。行高 ≈ 40 */
+/* 行：圆形勾选 → 名字（弹性截断）→ 徽标（可收缩：note 超长截字，不撑出
+   横向滚动条）→ 来源头像。最后一列 auto 而不是定宽：组行收尾是**头像串**
+   （最多 4 枚叠排 ≈ 57px），钉 20px 会把列表撑出横向滚动条（截图实测）。 */
 .rp-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto 20px;
+  grid-template-columns: 18px minmax(0, 1fr) minmax(0, auto) auto;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -860,7 +862,7 @@
 /* 组行：正体加粗（与等宽模型名区分开），行尾带来源头像串 */
 .rp-group .rp-id { font-family: inherit; font-size: 12.5px; font-weight: 620; }
 
-.rp-badges { display: inline-flex; align-items: center; gap: 5px; }
+.rp-badges { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; }
 
 .rp-avatar { justify-self: end; }
 

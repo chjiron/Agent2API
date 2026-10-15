@@ -299,6 +299,7 @@ export function RoutingGroupsPanel() {
                       </svg>
                     </span>
                     <strong className='rg-auto-name'>{group.name}</strong>
+                    <span className='rg-tag'>{t('自动')}</span>
                     {group.coveredBy
                       ? <span className='rg-tag'>{t('已被「{name}」接管', { name: group.coveredBy })}</span>
                       : null}
