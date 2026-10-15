@@ -3,7 +3,6 @@ import {
   Badge,
   Button,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -13,6 +12,7 @@ import {
 } from '@ui'
 import { errorMessage, shared, toast } from './accounts-shared'
 import { ModelPicker } from './routing-model-picker'
+import { ProviderAvatar } from './routing-avatar'
 import { t } from '../i18n'
 import {
   ROUTE_STICKY_OPTIONS,
@@ -29,29 +29,32 @@ import {
 } from './settings-model'
 
 /**
- * 设置页「路由组」分类的**路由组**管理块 —— **页面内联编辑，无弹窗**。
+ * 路由组页（主导航 → 转发能力 → 路由组；岛路由壳在 routing-page.tsx）。
  *
  * ── 交互 ──────────────────────────────────────────────────
  *   · 列表与编辑在同一处：点「编辑」那张卡片就地展开成编辑器，保存 / 取消
  *     回到卡片；删除确认也在卡片里内联回答 —— 不再有打断式弹窗。
- *   · **模型与路由组在同一浮层里选**（`routing-model-picker.tsx`，信息架构
- *     取自 magpie 的 picker）：搜索置顶、左侧供应商 / 组导航、无查询按组分
- *     组、有查询打分扁平；列表只列**真有这个模型的供应商**，没模型的家折进
- *     底部一行仍可加入成员。勾选模型自动维护同源键；自动识别组可整组勾选
- *     （= 各家变体一并接住）。
- *   · **排序一律拖拽**（↑↓ 按钮保留作备用）：成员行拖动 = 组内顺位；
+ *   · **模型与路由组在同一浮层里选**（`routing-model-picker.tsx`）：搜索置顶、
+ *     左侧来源导航（带头像与「+ 加入全部账号」）、无查询按来源分组、有查询
+ *     打分扁平；列表只列**真有这个模型的供应商**，没模型的家收在浮层底部
+ *     小胶囊行。勾选模型自动维护同源键；自动识别组可整组勾选。
+ *   · **排序一律拖拽**（↑↓ 保留作备用）：成员行拖动 = 组内顺位；
  *     「全部账号」成员展开后的账号也能拖（顺序存在该成员的 `accounts` 上，
  *     没拖到的新账号排在后面，同层按账号页优先级）。
- *   · 关系实时可见：汇总条（命中几个模型 / 几个成员 / 谁接不到活）、成员行
- *     显示**承接几个模型**、平台显示**可用账号数**、成员行内可改账号范围；
- *     数字全部由后端 `POST /api/routing-groups/preview` 现算（前端不复制判据）。
- *   · 保存失败必有提示：提交前硬校验（缺什么直接说），失败时错误条钉在编辑器
- *     底部 + toast，已填内容不丢。
+ *   · **反馈只有一种**：所有成功 / 失败统一走顶部 toast（与全站其它页一致），
+ *     不再叠一条内联错误条 —— 旧版「toast + 底部红条」双提示是两套体系并存，
+ *     已按用户要求收敛为一套。
+ *   · 关系实时可见：编辑器标题行实时胶囊（命中几个模型 / 几个成员 / 谁接不到
+ *     活）、成员行显示**承接几个模型**、来源显示**可用账号数**；数字全部由
+ *     后端 `POST /api/routing-groups/preview` 现算（前端不复制判据）。
  *
  * ── 成员顺序 = 组内顺位 ─────────────────────────────────────
  * 成员行的上下顺序就是这个组的队列顺序（顺序优先按它排、负载均衡按它轮）。
- * 成员两种形态：全部账号（该平台所有账号，含以后新增的）与指定账号（点成员
- * 行里的「账号」按钮勾选；全选会自动回到全部账号）。
+ * 成员两种形态：全部账号（该平台所有账号，含以后新增的）与指定账号。
+ *
+ * ── 对外契约 ──────────────────────────────────────────────
+ * `window.wbRoutingPanel = { load }`：app.js 切页时调一次 —— 组 / 自动组 /
+ * 候选表都是运行期事实，不轮询，进页即刷（与 proxies 页同一形态）。
  */
 
 const INHERIT = '__inherit'
@@ -68,7 +71,7 @@ function inactiveReason(group: RoutingGroupView): string {
   return ''
 }
 
-/** 组级策略的一行人话摘要（卡片上代替整张设置表） */
+/** 组级策略的一行人话摘要（卡片脚注用） */
 function settingsSummary(settings: RoutingGroupSettingsView): string {
   const items: string[] = []
   const strategy = ROUTE_STRATEGIES.find(item => item.value === settings.strategy)?.label
@@ -79,6 +82,21 @@ function settingsSummary(settings: RoutingGroupSettingsView): string {
   if (settings.sink === false) items.push(t('垫底：关'))
   if (settings.breakerEnabled === true) items.push(t('熔断：开'))
   return items.length > 0 ? items.join(' · ') : t('全部继承全局设置')
+}
+
+/** 成员行的展示名（头像旁边） */
+function memberText(member: RoutingGroupMemberView, index: number, providerIndex: Map<string, RoutingGroupProviderOption>): string {
+  if (member.type === 'provider') {
+    const label = member.label ?? member.id
+    const count = providerIndex.get(member.id)?.count
+    if (count === undefined) return `${index + 1}. ${label}`
+    return count === 0
+      ? `${index + 1}. ${t('{label}（没有可用账号）', { label })}`
+      : `${index + 1}. ${t('{label}（{count} 个可用账号）', { label, count: String(count) })}`
+  }
+  const provider = member.providerLabel ?? member.provider ?? ''
+  const name = member.name ?? member.id
+  return `${index + 1}. ${provider ? `${provider} · ${name}` : name}`
 }
 
 /** 主面板：整块内联（列表 ⇄ 就地编辑），不含任何弹窗 */
@@ -114,6 +132,12 @@ export function RoutingGroupsPanel() {
 
   React.useEffect(() => { void load() }, [load])
 
+  // 切页即刷：app.js showPage('routing') 调 window.wbRoutingPanel.load()
+  React.useEffect(() => {
+    window.wbRoutingPanel = { load }
+    return () => { delete window.wbRoutingPanel }
+  }, [load])
+
   const accept = (next: RoutingGroupsPayload | null | undefined) => {
     if (next) setPayload(next)
     else void load()
@@ -130,6 +154,20 @@ export function RoutingGroupsPanel() {
       await bridge.setRoutingConfig(patch)
       await load()
       toast(t('✅ 路由设置已保存'))
+    } catch (error) {
+      toast(t('保存失败：{message}', { message: errorMessage(error) }), 'err')
+      await load()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 卡片上的启用开关：PATCH 只带 enabled，写成功才翻转（失败 toast 回滚） */
+  const toggleGroupEnabled = async (group: RoutingGroupView) => {
+    if (busy || !bridge?.updateRoutingGroup) return
+    setBusy(true)
+    try {
+      accept(await bridge.updateRoutingGroup(group.id, { enabled: !group.enabled }))
     } catch (error) {
       toast(t('保存失败：{message}', { message: errorMessage(error) }), 'err')
       await load()
@@ -159,11 +197,6 @@ export function RoutingGroupsPanel() {
   const providerIndex = React.useMemo(() => providerIndexOf(payload?.providers ?? []), [payload])
   const groups = payload?.groups ?? []
   const autoGroups = payload?.autoGroups ?? []
-  const headerBadge = status === 'ready'
-    ? undefined
-    : status === 'unavailable'
-      ? <Badge variant='destructive'>{t('不可用')}</Badge>
-      : <Badge variant='outline'>{t('检测中…')}</Badge>
 
   const editorProps = {
     payload,
@@ -176,41 +209,40 @@ export function RoutingGroupsPanel() {
       <div className='panel-head'>
         <h2>{t('路由组')}</h2>
         <span className='tip-q' data-tip={t('路由组把「请求先落到哪几个账号」变成可配置的：选几个平台（或指定账号）当成员，再勾选它承接的模型。成员顺序就是组内队列顺序；勾选模型会自动覆盖各家的同源拼写。')}></span>
-        {headerBadge}
         <div className='head-actions'>
-          <Button id='btn-routing-group-refresh' variant='outline' disabled={busy}
+          <Button id='btn-routing-group-refresh' variant='outline' size='sm' disabled={busy}
             onClick={() => void load()}>{t('刷新')}</Button>
-          <Button id='btn-routing-group-new' variant='outline' disabled={disabled || editing !== null}
-            onClick={() => setEditing({ group: null, auto: null })}>{t('新建组')}</Button>
+          <Button id='btn-routing-group-new' variant='default' size='sm' disabled={disabled || editing !== null}
+            onClick={() => setEditing({ group: null, auto: null })}>＋ {t('新建组')}</Button>
         </div>
       </div>
       <div className='panel-body'>
-        <div className='retention-list'>
-          <label className='switch'>
-            <Switch
-              id='routing-auto-groups'
-              checked={payload?.autoGroupsEnabled ?? true}
-              disabled={disabled}
-              onCheckedChange={next => void saveSwitch({ routingAutoGroups: next })} />
-            <span>{t('自动识别组')}</span>
-            <span className='tip-q' data-tip={t('开启时：多个平台提供「归一化同源」的模型自动并成一个组，请求在该组的全部账号间选路 —— 某家限流 / 欠费时自动用上别家的同名模型。关闭后回到「只有清单里正好有这个模型名的平台才接」。')}></span>
-          </label>
-          <label className='switch'>
-            <Switch
-              id='routing-expose-scoped'
-              checked={payload?.exposeScopedModels ?? false}
-              disabled={disabled}
-              onCheckedChange={next => void saveSwitch({ exposeScopedModels: next })} />
-            <span>{t('在模型列表里附加「平台/模型」限定名')}</span>
-            <span className='tip-q' data-tip={t('开启后 GET /v1/models 在每个模型之外再列出「平台id/模型id」条目：客户端点名这种名字就把请求钉死在那一家。关闭只影响列表是否列出，请求侧始终接受限定名。')}></span>
-          </label>
+
+        {/* 两个总开关：开关卡（图标 + 标题 + 一句说明 + 开关），点整卡即拨 */}
+        <div className='rg-switches'>
+          <SwitchCard
+            id='routing-auto-groups'
+            title={t('自动识别组')}
+            desc={t('多家提供同名模型自动并成一组，某家限流时自动用上别家的同名账号')}
+            tip={t('开启时：多个平台提供「归一化同源」的模型自动并成一个组，请求在该组的全部账号间选路 —— 某家限流 / 欠费时自动用上别家的同名模型。关闭后回到「只有清单里正好有这个模型名的平台才接」。')}
+            checked={payload?.autoGroupsEnabled ?? true}
+            disabled={disabled}
+            onChange={next => void saveSwitch({ routingAutoGroups: next })} />
+          <SwitchCard
+            id='routing-expose-scoped'
+            title={t('模型列表附加「平台/模型」限定名')}
+            desc={t('客户端点名 qoder/deepseek-v4.1-flash 这种写法时，请求钉死在那一家')}
+            tip={t('开启后 GET /v1/models 在每个模型之外再列出「平台id/模型id」条目：客户端点名这种名字就把请求钉死在那一家。关闭只影响列表是否列出，请求侧始终接受限定名。')}
+            checked={payload?.exposeScopedModels ?? false}
+            disabled={disabled}
+            onChange={next => void saveSwitch({ exposeScopedModels: next })} />
         </div>
 
         {status === 'unavailable' ? (
           <div className='hint'>{t('读不到路由组：后端不可用，或这次运行的前端版本比后端旧（缺 /api/routing-groups）。')}</div>
         ) : null}
 
-        <div className='routing-group-list'>
+        <div className='rg-list'>
           {/* 新建/编辑自动组的编辑器排在最前：都在列表里就地展开 */}
           {editing && editing.group === null ? (
             <GroupEditor
@@ -222,7 +254,12 @@ export function RoutingGroupsPanel() {
           ) : null}
 
           {status === 'ready' && groups.length === 0 && editing === null ? (
-            <div className='hint'>{t('还没有路由组。点「新建组」：选几个平台（或指定账号）当成员，再勾选它承接的模型。')}</div>
+            <div className='rg-empty'>
+              <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.6' strokeLinecap='round'>
+                <circle cx='5' cy='12' r='2' /><path d='M7.5 12H12' /><path d='M12 12c2.5 0 2.5-5 5-5h3' /><path d='M12 12c2.5 0 2.5 5 5 5h3' />
+              </svg>
+              {t('还没有路由组。点「新建组」：选几个平台（或指定账号）当成员，再勾选它承接的模型。')}
+            </div>
           ) : null}
 
           {groups.map(group => (
@@ -239,6 +276,7 @@ export function RoutingGroupsPanel() {
                 onAskDelete={() => setConfirming(group.id)}
                 onCancelDelete={() => setConfirming(null)}
                 onConfirmDelete={() => void removeGroup(group)}
+                onToggleEnabled={() => void toggleGroupEnabled(group)}
               />
             )
           ))}
@@ -246,36 +284,38 @@ export function RoutingGroupsPanel() {
 
         {autoGroups.length > 0 ? (
           <>
-            <div className='routing-group-sep'>
-              {t('自动识别组（随各家模型清单自动更新；点「编辑」可接管成可编辑的组）')}
-              {payload?.autoGroupsEnabled === false ? t(' —— 当前已关闭，不参与选路') : ''}
+            <div className='rg-sep'>
+              {t('自动识别组')}
+              <span>{payload?.autoGroupsEnabled === false ? t('当前已关闭，不参与选路') : t('随各家模型清单自动更新；点「接管」可变成可编辑的组')}</span>
             </div>
-            <div className='routing-group-list'>
+            <div className='rg-list'>
               {autoGroups.map(group => {
                 const dimmed = payload?.autoGroupsEnabled === false || Boolean(group.coveredBy)
                 return (
-                  <div key={group.id} className={`routing-group-card${dimmed ? ' is-muted' : ''}`}>
-                    <div className='routing-group-head'>
-                      <strong>{group.name}</strong>
-                      <Badge variant='secondary'>{t('自动')}</Badge>
-                      {group.coveredBy
-                        ? <Badge variant='outline'>{t('已被「{name}」接管', { name: group.coveredBy })}</Badge>
-                        : null}
-                      <span className='routing-group-spacer' />
-                      <Button variant='outline' disabled={disabled || Boolean(group.coveredBy) || editing !== null}
-                        title={group.coveredBy
-                          ? t('这条自动组已被同名组接管')
-                          : t('沿用这个自动组的成员与匹配，进入编辑器')}
-                        onClick={() => setEditing({ group: null, auto: group })}>{t('编辑')}</Button>
-                    </div>
-                    <div className='routing-group-line'>
-                      <span className='routing-group-label'>{t('成员')}</span>
-                      {group.variants.map((variant, index) => (
-                        <Badge key={`${variant.provider}-${variant.model}`} variant='outline'>
-                          {`${index + 1}. ${variant.providerLabel ?? variant.provider} · ${variant.model}`}
-                        </Badge>
+                  <div key={group.id} className={`rg-auto-row${dimmed ? ' is-muted' : ''}`}>
+                    <span className='rg-auto-icon'>
+                      <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round'>
+                        <circle cx='5' cy='12' r='2.2' /><path d='M7.5 12H12' /><path d='M12 12c2.5 0 2.5-5 5-5h3' /><path d='M12 12c2.5 0 2.5 5 5 5h3' />
+                      </svg>
+                    </span>
+                    <strong className='rg-auto-name'>{group.name}</strong>
+                    {group.coveredBy
+                      ? <span className='rg-tag'>{t('已被「{name}」接管', { name: group.coveredBy })}</span>
+                      : null}
+                    <span className='rg-spacer' style={{ flex: 1 }} />
+                    <span className='rg-chips'>
+                      {group.variants.map(variant => (
+                        <span key={`${variant.provider}-${variant.model}`} className='rg-chip is-ghost'>
+                          <ProviderAvatar provider={variant.provider} label={variant.providerLabel} size={14} />
+                          <span title={variant.model}>{variant.providerLabel ?? variant.provider}</span>
+                        </span>
                       ))}
-                    </div>
+                    </span>
+                    <Button variant='ghost' size='xs' disabled={disabled || Boolean(group.coveredBy) || editing !== null}
+                      title={group.coveredBy
+                        ? t('这条自动组已被同名组接管')
+                        : t('沿用这个自动组的成员与匹配，进入编辑器')}
+                      onClick={() => setEditing({ group: null, auto: group })}>{t('接管')}</Button>
                   </div>
                 )
               })}
@@ -284,6 +324,33 @@ export function RoutingGroupsPanel() {
         ) : null}
       </div>
     </section>
+  )
+}
+
+/* ─── 开关卡（页面顶部的两个总开关）────────────── */
+
+function SwitchCard({ id, title, desc, tip, checked, disabled, onChange }: {
+  id: string
+  title: string
+  desc: string
+  tip: string
+  checked: boolean
+  disabled: boolean
+  onChange: (next: boolean) => void
+}) {
+  return (
+    <div className={`rg-switch${checked ? ' on' : ''}`} onClick={() => { if (!disabled) onChange(!checked) }}>
+      <span className='rg-switch-icon'>
+        <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.8' strokeLinecap='round' strokeLinejoin='round'>
+          <circle cx='12' cy='12' r='3' /><path d='M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1' />
+        </svg>
+      </span>
+      <span className='rg-switch-text'>
+        <span className='rg-switch-title'>{title}<span className='tip-q' data-tip={tip} onClick={event => event.stopPropagation()}></span></span>
+        <span className='rg-switch-desc'>{desc}</span>
+      </span>
+      <Switch id={id} checked={checked} disabled={disabled} onCheckedChange={onChange} />
+    </div>
   )
 }
 
@@ -298,6 +365,7 @@ function GroupCard({
   onAskDelete,
   onCancelDelete,
   onConfirmDelete,
+  onToggleEnabled,
 }: {
   group: RoutingGroupView
   providerIndex: Map<string, RoutingGroupProviderOption>
@@ -307,73 +375,80 @@ function GroupCard({
   onAskDelete: () => void
   onCancelDelete: () => void
   onConfirmDelete: () => void
+  onToggleEnabled: () => void
 }) {
   const unserved = group.coverage.unservedMembers.length
   const orphans = group.coverage.orphanPatterns.length
   const reason = inactiveReason(group)
-  const memberText = (member: RoutingGroupMemberView, index: number) => {
-    if (member.type === 'provider') {
-      const label = member.label ?? member.id
-      const count = providerIndex.get(member.id)?.count
-      if (count === undefined) return `${index + 1}. ${label}`
-      return count === 0
-        ? `${index + 1}. ${t('{label}（没有可用账号）', { label })}`
-        : `${index + 1}. ${t('{label}（{count} 个可用账号）', { label, count: String(count) })}`
-    }
-    const provider = member.providerLabel ?? member.provider ?? ''
-    const name = member.name ?? member.id
-    return `${index + 1}. ${provider ? `${provider} · ${name}` : name}`
-  }
   return (
-    <div className='routing-group-card'>
-      <div className='routing-group-head'>
-        <strong>{group.name}</strong>
-        {group.fromAuto ? <Badge variant='secondary'>{t('来自自动组')}</Badge> : null}
-        {reason ? <Badge variant='warning'>{t('未生效')}</Badge> : <Badge variant='success'>{t('生效中')}</Badge>}
-        <span className='routing-group-spacer' />
-        {confirming ? (
-          <>
-            <span className='hint routing-warn'>{t('确认删除？')}</span>
-            <Button variant='outline' onClick={onCancelDelete}>{t('取消')}</Button>
-            <Button onClick={onConfirmDelete}>{t('删除')}</Button>
-          </>
-        ) : (
-          <>
-            <Button variant='outline' disabled={disabled} onClick={onEdit}>{t('编辑')}</Button>
-            <Button variant='outline' disabled={disabled} onClick={onAskDelete}>{t('删除')}</Button>
-          </>
-        )}
-      </div>
-      {reason ? <div className='hint routing-warn'>{reason}</div> : null}
-      <div className='routing-group-line'>
-        <span className='routing-group-label'>{t('模型')}</span>
-        {group.models.length === 0 && group.normalizedKeys.length === 0
-          ? <span className='hint'>{t('（未填匹配）')}</span>
-          : group.models.map(pattern => <Badge key={pattern} variant='info'>{pattern}</Badge>)}
-      </div>
-      <div className='routing-group-line'>
-        <span className='routing-group-label'>{t('成员')}</span>
-        {group.members.length === 0
-          ? <span className='hint'>{t('（没有成员）')}</span>
-          : group.members.map((member, index) => (
-            <Badge key={`${member.type}-${member.id}`}
-              variant={member.missing ? 'destructive' : member.type === 'provider' ? 'secondary' : 'outline'}
-              title={member.missing ? t('这条成员已失效，请编辑把它换掉') : memberText(member, index)}>
-              {memberText(member, index)}
-            </Badge>
-          ))}
-      </div>
-      <div className='routing-group-line'>
-        <span className='routing-group-label'>{t('覆盖')}</span>
-        <span className='hint'>
-          {t('命中 {count} 个模型', { count: group.coverage.matchedCount })}
-          {unserved > 0 ? t(' · {count} 个成员接不到任何已选模型', { count: unserved }) : ''}
-          {orphans > 0 ? t(' · {count} 个模式在目录里没有对应模型', { count: orphans }) : ''}
+    <div className={`rg-card${group.enabled && !reason ? ' is-active' : ''}`}>
+      <div className='rg-card-head'>
+        <Switch
+          id={`rg-enabled-${group.id}`}
+          className='rg-toggle'
+          checked={group.enabled}
+          disabled={disabled}
+          onCheckedChange={onToggleEnabled} />
+        <span className='rg-dot' title={reason || t('生效中')} />
+        <strong className='rg-name'>{group.name}</strong>
+        {group.fromAuto ? <span className='rg-tag'>{t('来自自动组')}</span> : null}
+        <span className='rg-meta'>
+          {t('命中 {count} 个模型 · {members} 个成员', { count: group.coverage.matchedCount, members: group.members.length })}
+          {unserved > 0 ? t(' · {count} 个成员接不到活', { count: unserved }) : ''}
+          {orphans > 0 ? t(' · {count} 个模式落空', { count: orphans }) : ''}
+        </span>
+        <span className='rg-actions'>
+          {confirming ? (
+            <>
+              <span className='rg-foot-warn' style={{ fontSize: 11.5 }}>{t('确认删除？')}</span>
+              <Button variant='outline' size='sm' onClick={onCancelDelete}>{t('取消')}</Button>
+              <Button variant='destructive' size='sm' onClick={onConfirmDelete}>{t('删除')}</Button>
+            </>
+          ) : (
+            <>
+              <Button variant='outline' size='sm' disabled={disabled} onClick={onEdit}>{t('编辑')}</Button>
+              <Button variant='ghost' size='sm' disabled={disabled} onClick={onAskDelete}>{t('删除')}</Button>
+            </>
+          )}
         </span>
       </div>
-      <div className='routing-group-line'>
-        <span className='routing-group-label'>{t('策略')}</span>
-        <span className='hint'>{settingsSummary(group.settings)}</span>
+
+      {reason ? <div className='rg-reason'>{reason}</div> : null}
+
+      <div className='rg-body'>
+        <div className='rg-line'>
+          <span className='rg-line-label'>{t('模型')}</span>
+          <span className='rg-chips'>
+            {group.models.length === 0 && group.normalizedKeys.length === 0
+              ? <span className='hint'>{t('（未填匹配）')}</span>
+              : group.models.map(pattern => <span key={pattern} className='rg-chip'><span>{pattern}</span></span>)}
+          </span>
+        </div>
+        <div className='rg-line'>
+          <span className='rg-line-label'>{t('成员')}</span>
+          <span className='rg-chips'>
+            {group.members.length === 0
+              ? <span className='hint'>{t('（没有成员）')}</span>
+              : group.members.map((member, index) => {
+                const display = memberText(member, index, providerIndex)
+                return (
+                  <span key={`${member.type}-${member.id}`}
+                    className={`rg-member-pill${member.missing ? ' is-missing' : ''}`}
+                    title={member.missing ? t('这条成员已失效，请编辑把它换掉') : display}>
+                    <ProviderAvatar
+                      provider={member.type === 'provider' ? member.id : member.provider ?? ''}
+                      label={member.type === 'provider' ? member.label : member.providerLabel ?? member.name ?? member.id}
+                      size={16} />
+                    <span>{display}</span>
+                  </span>
+                )
+              })}
+          </span>
+        </div>
+      </div>
+
+      <div className='rg-foot'>
+        <span>{t('策略')}: {settingsSummary(group.settings)}</span>
       </div>
     </div>
   )
@@ -451,7 +526,7 @@ function draftToSettings(draft: SettingsDraft): Record<string, unknown> {
   }
 }
 
-/** 草稿 → 展示形态（卡片 / 高级区摘要共用） */
+/** 草稿 → 展示形态（高级区摘要用） */
 function draftToSettingsView(draft: SettingsDraft): RoutingGroupSettingsView {
   const boolOf = (value: string): boolean | null => (value === INHERIT ? null : value === 'true')
   const intOf = (value: string): number | null => {
@@ -536,7 +611,6 @@ function GroupEditor({
   const [expandedProvider, setExpandedProvider] = React.useState<string | null>(null)
   const [advancedOpen, setAdvancedOpen] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
-  const [error, setError] = React.useState('')
   /** 成员行的拖拽标记（拖动排序；↑↓ 按钮保留作备用） */
   const [memberDrag, setMemberDrag] = React.useState<DragMark | null>(null)
   /** 账号范围里的拖拽标记（只对「全部账号」成员有效） */
@@ -743,7 +817,7 @@ function GroupEditor({
 
   const submit = async () => {
     if (saving) return
-    // ── 提交前硬校验：缺什么直接说清楚 ──
+    // ── 提交前硬校验：缺什么直接说清楚（只 toast 一种提示）──
     const problems: string[] = []
     if (!name.trim()) problems.push(t('组名为空'))
     if (members.length === 0) problems.push(t('还没有成员（至少要有一个平台或账号）'))
@@ -751,14 +825,11 @@ function GroupEditor({
       problems.push(t('还没有选模型（至少勾一个模型，或在高级里写一个模式）'))
     }
     if (problems.length > 0) {
-      const message = t('还不能保存：{problems}', { problems: problems.join('；') })
-      setError(message)
-      toast(message, 'err')
+      toast(t('还不能保存：{problems}', { problems: problems.join('；') }), 'err')
       return
     }
     if (!bridge) return
     setSaving(true)
-    setError('')
     const body: Record<string, unknown> = {
       name: name.trim(),
       models: patterns,
@@ -783,9 +854,7 @@ function GroupEditor({
         : group ? t('✅ 路由组已保存') : t('✅ 路由组已创建'))
       onSaved(next)
     } catch (err) {
-      const message = errorMessage(err)
-      setError(t('保存失败：{message}', { message }))
-      toast(t('保存失败：{message}', { message }), 'err')
+      toast(t('保存失败：{message}', { message: errorMessage(err) }), 'err')
     } finally {
       setSaving(false)
     }
@@ -797,53 +866,57 @@ function GroupEditor({
   const orphanCount = preview?.orphanPatterns.length ?? 0
 
   return (
-    <div className='routing-group-card is-editing'>
-      <div className='routing-group-head'>
-        <strong>{group ? t('编辑路由组') : customize ? t('编辑自动组') : t('新建路由组')}</strong>
-        <span className='routing-group-spacer' />
-        <Button variant='outline' disabled={saving} onClick={onCancel}>{t('取消')}</Button>
-        <Button disabled={saving} onClick={() => void submit()}>{t('保存')}</Button>
+    <div className='rg-card is-editing'>
+      <div className='rg-editor-head'>
+        <strong className='rg-editor-title'>{group ? t('编辑路由组') : customize ? t('编辑自动组') : t('新建路由组')}</strong>
+        <span style={{ flex: 1 }} />
+        <Button variant='outline' size='sm' disabled={saving} onClick={onCancel}>{t('取消')}</Button>
+        <Button size='sm' disabled={saving} onClick={() => void submit()}>{saving ? t('保存中…') : t('保存')}</Button>
       </div>
 
       {customize ? (
-        <div className='hint'>{t('正在编辑自动组「{key}」：保存后它成为可编辑的组（不再随各家清单自动变化），删除它即恢复自动识别。', { key: customize.key })}</div>
+        <div className='hint' style={{ padding: '8px 14px 0' }}>{t('正在编辑自动组「{key}」：保存后它成为可编辑的组（不再随各家清单自动变化），删除它即恢复自动识别。', { key: customize.key })}</div>
       ) : null}
 
-      {/* 关系汇总 + 组名（实时） */}
-      <div className='routing-summary'>
-        <Input className='routing-name-input' value={name} maxLength={60} aria-label={t('组名')}
+      {/* 组名 + 实时关系统计（边改边看） */}
+      <div className='rg-summary'>
+        <Input className='rg-name-input' value={name} maxLength={60} aria-label={t('组名')}
           placeholder={t('组名')} onChange={event => setName(event.target.value)} />
         {matchedCount === null
-          ? <span className='hint'>{t('正在计算覆盖…')}</span>
+          ? <span className='rg-stat'>{t('正在计算覆盖…')}</span>
           : <>
-            <Badge variant='info'>{t('命中 {count} 个模型', { count: matchedCount })}</Badge>
-            <Badge variant='outline'>{t('成员 {count} 个', { count: members.length })}</Badge>
+            <span className='rg-stat'>{t('命中 {count} 个模型', { count: matchedCount })}</span>
+            <span className='rg-stat'>{t('成员 {count} 个', { count: members.length })}</span>
             {unservedCount > 0
-              ? <Badge variant='destructive'>{t('{count} 个成员接不到任何已选模型', { count: unservedCount })}</Badge>
+              ? <span className='rg-stat is-bad'>{t('{count} 个成员接不到活', { count: unservedCount })}</span>
               : null}
             {orphanCount > 0
-              ? <Badge variant='warning'>{t('{count} 个模式在目录里没有对应模型', { count: orphanCount })}</Badge>
+              ? <span className='rg-stat is-warn'>{t('{count} 个模式落空', { count: orphanCount })}</span>
               : null}
           </>}
       </div>
 
-      {/* ① 成员与账号（拖拽排序 = 组内顺位；↑↓ 保留作备用） */}
-      <div className='routing-field'>
-        <Label>{t('成员与账号（拖动调整顺序，越靠前越先用；也可用 ↑↓）')}</Label>
-        <div className='routing-members'>
+      {/* ① 成员与账号（拖动调整顺序，越靠前越先用；↑↓ 保留作备用） */}
+      <div className='rg-field'>
+        <div className='rg-field-label'>
+          {t('成员与账号')}
+          <span className='hint'>{t('拖动调整顺序，越靠前越先用；也可用 ↑↓')}</span>
+        </div>
+        <div className='rg-members'>
           {members.length === 0
             ? <div className='hint'>{t('还没有成员：在下面的选择器里点供应商行的 +（加入全部账号），或在「账号」页选指定账号）。')}</div>
             : members.map((member, index) => {
               const display = memberDisplay(member)
               const serves = servesOf(member)
               const provider = member.type === 'provider' ? member.id : providerOfAccount(member.id)
+              const avatarProvider = member.type === 'provider' ? member.id : (accountOptions.find(item => item.id === member.id)?.provider ?? '')
               const state = provider ? platformState(provider) : { whole: false, accounts: [] as string[] }
               const expanded = Boolean(provider) && expandedProvider === provider
               const orderedCount = (member.accounts ?? []).length
               return (
                 <React.Fragment key={memberKeyOf(member)}>
                   <div
-                    className={`routing-member-row${dragClasses(memberDrag, index)}`}
+                    className={`rg-member${dragClasses(memberDrag, index)}`}
                     draggable
                     onDragStart={event => {
                       event.dataTransfer.effectAllowed = 'move'
@@ -872,12 +945,19 @@ function GroupEditor({
                       }
                     }}
                     onDragEnd={() => { memberDragRef.current = null; setMemberDrag(null) }}>
-                    <span className='routing-grip' title={t('按住拖动调整顺序')} aria-hidden>⠿</span>
-                    <span className='routing-member-order'>{index + 1}</span>
-                    <Badge variant={member.type === 'provider' ? 'secondary' : 'outline'}>
+                    <span className='rg-grip' title={t('按住拖动调整顺序')} aria-hidden>
+                      <svg width='12' height='12' viewBox='0 0 24 24' fill='currentColor'>
+                        <circle cx='9' cy='5' r='1.7' /><circle cx='15' cy='5' r='1.7' />
+                        <circle cx='9' cy='12' r='1.7' /><circle cx='15' cy='12' r='1.7' />
+                        <circle cx='9' cy='19' r='1.7' /><circle cx='15' cy='19' r='1.7' />
+                      </svg>
+                    </span>
+                    <span className='rg-order'>{index + 1}</span>
+                    <ProviderAvatar provider={avatarProvider} label={display} size={18} />
+                    <Badge variant={member.type === 'provider' ? 'secondary' : 'outline'} className='rg-kind'>
                       {member.type === 'provider' ? t('全部账号') : t('指定账号')}
                     </Badge>
-                    <span className='routing-member-label' title={display}>{display}</span>
+                    <span className='rg-member-label' title={display}>{display}</span>
                     {member.type === 'provider' && orderedCount > 0
                       ? <span className='hint'>{t('已定顺序 {count} 个', { count: orderedCount })}</span>
                       : null}
@@ -887,23 +967,23 @@ function GroupEditor({
                         ? <Badge variant='outline'>{t('承接 {count} 个模型', { count: serves })}</Badge>
                         : <Badge variant='destructive'>{t('接不到任何已选模型')}</Badge>}
                     {provider ? (
-                      <button type='button' className='routing-icon-btn'
+                      <button type='button' className='rg-btn'
                         title={t('改这个平台的账号范围（默认全部账号）')}
                         onClick={() => setExpandedProvider(expanded ? null : provider)}>
                         {t('账号')}
                       </button>
                     ) : null}
-                    <button type='button' className='routing-icon-btn' disabled={index === 0}
+                    <button type='button' className='rg-btn is-icon' disabled={index === 0}
                       title={t('上移（更先用）')} onClick={() => moveMember(index, -1)}>↑</button>
-                    <button type='button' className='routing-icon-btn'
+                    <button type='button' className='rg-btn is-icon'
                       disabled={index === members.length - 1}
                       title={t('下移')} onClick={() => moveMember(index, 1)}>↓</button>
-                    <button type='button' className='routing-icon-btn'
+                    <button type='button' className='rg-btn is-icon'
                       title={t('移出成员')} onClick={() => removeMember(member)}>✕</button>
                   </div>
                   {expanded && provider ? (
-                    <div className='routing-account-scope'>
-                      <label className='switch'>
+                    <div className='rg-scope'>
+                      <label className='switch' onClick={event => event.stopPropagation()}>
                         <Switch size='sm' checked={state.whole}
                           onCheckedChange={() => togglePlatformWhole(provider)} />
                         <span>{t('全部账号（该平台所有账号，含以后新增的）')}</span>
@@ -913,16 +993,24 @@ function GroupEditor({
                           ? t('拖动账号调整它在本组里的先后；没拖到的新账号排在后面（同层按账号页优先级）。点一下可把某个账号移出本组。')
                           : t('点一下把账号加进本组（全选会自动回到「全部账号」）；先后在成员列表里拖动。')}
                       </div>
-                      <div className='routing-account-scope-list'>
+                      <div className='rg-scope-list'>
                         {orderedScopeAccounts(provider).map((account, index) => {
                           const checked = state.whole || state.accounts.includes(account.id)
                           const mark = scopeDrag && scopeDrag.provider === provider ? scopeDrag : null
-                          const rowClass = `routing-dir-model${checked ? ' is-picked' : ''}${state.whole ? dragClasses(mark, index) : ''}`
+                          const rowClass = `rg-scope-row${checked ? ' is-picked' : ''}${state.whole ? dragClasses(mark, index) : ''}`
                           const content = (
                             <>
-                              {state.whole ? <span className='routing-grip' title={t('按住拖动调整顺序')} aria-hidden>⠿</span> : null}
-                              <span className='routing-dir-check' aria-hidden>{checked ? '✓' : ''}</span>
-                              <span className='routing-dir-model-id'>{account.name ?? account.id}</span>
+                              {state.whole
+                                ? <span className='rg-grip' title={t('按住拖动调整顺序')} aria-hidden>
+                                  <svg width='12' height='12' viewBox='0 0 24 24' fill='currentColor'>
+                                    <circle cx='9' cy='5' r='1.7' /><circle cx='15' cy='5' r='1.7' />
+                                    <circle cx='9' cy='12' r='1.7' /><circle cx='15' cy='12' r='1.7' />
+                                    <circle cx='9' cy='19' r='1.7' /><circle cx='15' cy='19' r='1.7' />
+                                  </svg>
+                                </span>
+                                : null}
+                              <span className='rg-check' aria-hidden>{checked ? '✓' : ''}</span>
+                              <span className='rg-scope-name'>{account.name ?? account.id}</span>
                               {account.enabled === false ? <Badge variant='outline'>{t('已停用')}</Badge> : null}
                             </>
                           )
@@ -984,28 +1072,31 @@ function GroupEditor({
         </div>
       </div>
 
-      {/* ② 模型与路由组（同一浮层选择器：搜索置顶、供应商/组导航、扁平打分） */}
-      <div className='routing-field'>
-        <Label>{t('承接的模型（勾选即接住，各家的同源拼写自动一起接住；路由组可整组勾选）')}</Label>
-        {checkedModels.length === 0 && extraPatterns.length === 0 ? (
-          <div className='hint'>{t('还没有选模型。')}</div>
-        ) : (
-          <div className='routing-pattern-row'>
-            {checkedModels.map(id => (
-              <span key={id} className='routing-pattern-chip'>
-                <span>{id}</span>
-                <button type='button' title={t('移出这个模型')} onClick={() => toggleModel(id)}>✕</button>
-              </span>
-            ))}
-            {extraPatterns.map(pattern => (
-              <span key={pattern} className='routing-pattern-chip is-extra'>
-                <span>{pattern}</span>
-                <button type='button' title={t('移出这个模式')}
-                  onClick={() => setPatterns(prev => prev.filter(item => item !== pattern))}>✕</button>
-              </span>
-            ))}
-          </div>
-        )}
+      {/* ② 模型与路由组（同一浮层选择器：搜索置顶、来源导航、扁平打分） */}
+      <div className='rg-field'>
+        <div className='rg-field-label'>
+          {t('承接的模型')}
+          <span className='hint'>{t('勾选即接住，各家的同源拼写自动一起接住；路由组可整组勾选')}</span>
+        </div>
+        <div className='rg-picked' style={{ marginBottom: 8 }}>
+          {checkedModels.length === 0 && extraPatterns.length === 0
+            ? <span className='hint'>{t('还没有选模型。')}</span>
+            : <>
+              {checkedModels.map(id => (
+                <span key={id} className='rg-chip'>
+                  <span>{id}</span>
+                  <button type='button' title={t('移出这个模型')} onClick={() => toggleModel(id)}>✕</button>
+                </span>
+              ))}
+              {extraPatterns.map(pattern => (
+                <span key={pattern} className='rg-chip is-extra'>
+                  <span>{pattern}</span>
+                  <button type='button' title={t('移出这个模式')}
+                    onClick={() => setPatterns(prev => prev.filter(item => item !== pattern))}>✕</button>
+                </span>
+              ))}
+            </>}
+        </div>
         <ModelPicker
           models={catalogModels}
           autoGroups={payload?.autoGroups ?? []}
@@ -1019,132 +1110,144 @@ function GroupEditor({
       </div>
 
       {/* ③ 高级（默认收起；功能不减）：额外模式 + 组级策略 */}
-      <div className='routing-field'>
-        <button type='button' className='routing-advanced-toggle'
-          onClick={() => setAdvancedOpen(prev => !prev)}>
-          {advancedOpen ? '▾ ' : '▸ '}
-          {t('高级：额外模式与组级策略')}
-          <span className='hint'>
-            {t('（额外模式 {patterns} 个 · 同源键 {keys} 个 · 策略：{policy}）', {
-              patterns: extraPatterns.length,
-              keys: effectiveKeys.length,
-              policy: settingsSummary(draftToSettingsView(draft)),
-            })}
-          </span>
-        </button>
-        {advancedOpen ? (
-          <div className='routing-advanced'>
-            <div className='routing-field'>
-              <Label>{t('额外模式（支持 * 通配，如 gpt-5*；回车加入）')}</Label>
-              <div className='routing-pattern-row'>
-                <input
-                  className='routing-pattern-input'
-                  value={extraInput}
-                  aria-label={t('额外模式')}
-                  placeholder={t('例如 gpt-5*')}
-                  onChange={event => setExtraInput(event.target.value)}
-                  onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addExtraPattern() } }}
-                  onBlur={addExtraPattern} />
+      <button type='button' className='rg-advanced-toggle'
+        onClick={() => setAdvancedOpen(prev => !prev)} aria-expanded={advancedOpen}>
+        <svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round'
+          style={{ transform: advancedOpen ? 'rotate(90deg)' : undefined, transition: 'transform 140ms ease' }}>
+          <path d='m9 6 6 6-6 6' />
+        </svg>
+        {t('高级：额外模式与组级策略')}
+        <span className='hint'>
+          {t('（额外模式 {patterns} 个 · 同源键 {keys} 个 · 策略：{policy}）', {
+            patterns: extraPatterns.length,
+            keys: effectiveKeys.length,
+            policy: settingsSummary(draftToSettingsView(draft)),
+          })}
+        </span>
+      </button>
+      {advancedOpen ? (
+        <>
+          <div className='rg-advanced'>
+            <div className='rg-field-label'>{t('额外模式（支持 * 通配，如 gpt-5*；回车加入）')}</div>
+            <input
+              className='rg-pattern-input'
+              value={extraInput}
+              aria-label={t('额外模式')}
+              placeholder={t('例如 gpt-5*')}
+              onChange={event => setExtraInput(event.target.value)}
+              onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addExtraPattern() } }}
+              onBlur={addExtraPattern} />
+            {legacyKeys.length > 0 ? (
+              <div className='hint' style={{ marginTop: 6 }}>
+                {t('同源匹配还包含 {count} 个原有键（保持原样）：{keys}', {
+                  count: legacyKeys.length, keys: legacyKeys.join('、'),
+                })}
               </div>
-              {legacyKeys.length > 0 ? (
-                <div className='hint'>
-                  {t('同源匹配还包含 {count} 个原有键（保持原样）：{keys}', {
-                    count: legacyKeys.length, keys: legacyKeys.join('、'),
-                  })}
-                </div>
-              ) : null}
-            </div>
-            <div className='routing-field'>
-              <Label>{t('组级路由策略（不动的项跟随全局设置）')}</Label>
-              <div className='routing-settings-grid'>
-                <span>{t('路由策略')}</span>
-                <Select value={draft.strategy}
-                  onValueChange={value => setDraft(prev => ({ ...prev, strategy: value ?? INHERIT }))}>
-                  <SelectTrigger className='w-[190px]' aria-label={t('路由策略')}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inheritOption}
-                    {ROUTE_STRATEGIES.map(item => (
-                      <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+            ) : null}
+          </div>
+          <div className='rg-advanced'>
+            <div className='rg-field-label'>{t('组级路由策略（不动的项跟随全局设置）')}</div>
+            <div className='rg-settings-grid'>
+              <span>{t('路由策略')}</span>
+              <Select value={draft.strategy}
+                onValueChange={value => setDraft(prev => ({ ...prev, strategy: value ?? INHERIT }))}>
+                <SelectTrigger className='w-[190px]' aria-label={t('路由策略')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {inheritOption}
+                  {ROUTE_STRATEGIES.map(item => (
+                    <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-                <span>{t('会话粘性')}</span>
-                <Select value={draft.sticky}
-                  onValueChange={value => setDraft(prev => ({ ...prev, sticky: value ?? INHERIT }))}>
-                  <SelectTrigger className='w-[190px]' aria-label={t('会话粘性')}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inheritOption}
-                    {ROUTE_STICKY_OPTIONS.map(item => (
-                      <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <span>{t('会话粘性')}</span>
+              <Select value={draft.sticky}
+                onValueChange={value => setDraft(prev => ({ ...prev, sticky: value ?? INHERIT }))}>
+                <SelectTrigger className='w-[190px]' aria-label={t('会话粘性')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {inheritOption}
+                  {ROUTE_STICKY_OPTIONS.map(item => (
+                    <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-                <span>{t('失败退避')}</span>
-                <Select value={draft.failoverBackoff}
-                  onValueChange={value => setDraft(prev => ({ ...prev, failoverBackoff: value ?? INHERIT }))}>
-                  <SelectTrigger className='w-[190px]' aria-label={t('失败退避')}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inheritOption}
-                    <SelectItem value='true'>{t('开')}</SelectItem>
-                    <SelectItem value='false'>{t('关')}</SelectItem>
-                  </SelectContent>
-                </Select>
+              <span>{t('失败退避')}</span>
+              <Select value={draft.failoverBackoff}
+                onValueChange={value => setDraft(prev => ({ ...prev, failoverBackoff: value ?? INHERIT }))}>
+                <SelectTrigger className='w-[190px]' aria-label={t('失败退避')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {inheritOption}
+                  <SelectItem value='true'>{t('开')}</SelectItem>
+                  <SelectItem value='false'>{t('关')}</SelectItem>
+                </SelectContent>
+              </Select>
 
-                <span>{t('限流垫底')}</span>
-                <Select value={draft.sink}
-                  onValueChange={value => setDraft(prev => ({ ...prev, sink: value ?? INHERIT }))}>
-                  <SelectTrigger className='w-[190px]' aria-label={t('限流垫底')}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inheritOption}
-                    <SelectItem value='true'>{t('开')}</SelectItem>
-                    <SelectItem value='false'>{t('关')}</SelectItem>
-                  </SelectContent>
-                </Select>
+              <span>{t('限流垫底')}</span>
+              <Select value={draft.sink}
+                onValueChange={value => setDraft(prev => ({ ...prev, sink: value ?? INHERIT }))}>
+                <SelectTrigger className='w-[190px]' aria-label={t('限流垫底')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {inheritOption}
+                  <SelectItem value='true'>{t('开')}</SelectItem>
+                  <SelectItem value='false'>{t('关')}</SelectItem>
+                </SelectContent>
+              </Select>
 
-                <span>{t('熔断')}</span>
-                <Select value={draft.breakerEnabled}
-                  onValueChange={value => setDraft(prev => ({ ...prev, breakerEnabled: value ?? INHERIT }))}>
-                  <SelectTrigger className='w-[190px]' aria-label={t('熔断')}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {inheritOption}
-                    <SelectItem value='true'>{t('开')}</SelectItem>
-                    <SelectItem value='false'>{t('关')}</SelectItem>
-                  </SelectContent>
-                </Select>
+              <span>{t('熔断')}</span>
+              <Select value={draft.breakerEnabled}
+                onValueChange={value => setDraft(prev => ({ ...prev, breakerEnabled: value ?? INHERIT }))}>
+                <SelectTrigger className='w-[190px]' aria-label={t('熔断')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {inheritOption}
+                  <SelectItem value='true'>{t('开')}</SelectItem>
+                  <SelectItem value='false'>{t('关')}</SelectItem>
+                </SelectContent>
+              </Select>
 
-                <span>{t('熔断阈值（连败次数）')}</span>
-                <Input className='w-[190px]' inputMode='numeric' value={draft.breakerThreshold}
-                  placeholder={t('继承全局')}
-                  onChange={event => setDraft(prev => ({ ...prev, breakerThreshold: event.target.value }))} />
+              <span>{t('熔断阈值（连败次数）')}</span>
+              <Input className='w-[190px]' inputMode='numeric' value={draft.breakerThreshold}
+                placeholder={t('继承全局')}
+                onChange={event => setDraft(prev => ({ ...prev, breakerThreshold: event.target.value }))} />
 
-                <span>{t('熔断时长（秒）')}</span>
-                <Input className='w-[190px]' inputMode='numeric' value={draft.breakerTimeoutSeconds}
-                  placeholder={t('继承全局')}
-                  onChange={event => setDraft(prev => ({ ...prev, breakerTimeoutSeconds: event.target.value }))} />
+              <span>{t('熔断时长（秒）')}</span>
+              <Input className='w-[190px]' inputMode='numeric' value={draft.breakerTimeoutSeconds}
+                placeholder={t('继承全局')}
+                onChange={event => setDraft(prev => ({ ...prev, breakerTimeoutSeconds: event.target.value }))} />
 
-                <span>{t('熔断恢复（连续成功次数）')}</span>
-                <Input className='w-[190px]' inputMode='numeric' value={draft.breakerSuccessThreshold}
-                  placeholder={t('继承全局')}
-                  onChange={event => setDraft(prev => ({ ...prev, breakerSuccessThreshold: event.target.value }))} />
-              </div>
+              <span>{t('熔断恢复（连续成功次数）')}</span>
+              <Input className='w-[190px]' inputMode='numeric' value={draft.breakerSuccessThreshold}
+                placeholder={t('继承全局')}
+                onChange={event => setDraft(prev => ({ ...prev, breakerSuccessThreshold: event.target.value }))} />
             </div>
           </div>
-        ) : null}
-      </div>
+        </>
+      ) : null}
 
-      {error ? <div className='routing-error-bar' role='alert'>⚠ {error}</div> : null}
+      {/* 底部动作条：保存 / 取消钉在卡片右下角（滚动区外，永远够得着） */}
+      <div className='rg-editor-foot'>
+        <span className='hint'>{t('成员顺序就是组内队列顺序：越靠前越先用')}</span>
+        <span className='spacer' />
+        <Button variant='outline' size='sm' disabled={saving} onClick={onCancel}>{t('取消')}</Button>
+        <Button size='sm' disabled={saving} onClick={() => void submit()}>{saving ? t('保存中…') : t('保存')}</Button>
+      </div>
     </div>
   )
+}
+
+declare global {
+  interface Window {
+    /** 路由组页的对外契约（app.js showPage('routing') 切页时 load()） */
+    wbRoutingPanel?: { load: () => void | Promise<void> }
+  }
 }

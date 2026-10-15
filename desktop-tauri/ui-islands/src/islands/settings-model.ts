@@ -427,7 +427,6 @@ export const CATEGORIES = [
   { id: 'general', label: '通用', icon: 'sliders' },
   { id: 'display', label: '显示', icon: 'display' },
   { id: 'gateway', label: '网关', icon: 'traffic' },
-  { id: 'routing-groups', label: '路由组', icon: 'route' },
   { id: 'retry', label: '重试', icon: 'refresh' },
   { id: 'timeout', label: '超时', icon: 'timer' },
   { id: 'security', label: '安全', icon: 'shield' },

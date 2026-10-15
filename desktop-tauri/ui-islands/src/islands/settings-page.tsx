@@ -117,7 +117,6 @@ import {
   PromptTextButton,
   gatewayEditedText,
 } from './settings-prompt-editor'
-import { RoutingGroupsPanel } from './routing-groups'
 import { t } from '../i18n'
 
 /**
@@ -1902,12 +1901,6 @@ function SettingsPage() {
         </div>
         <div className={paneClass('gateway')} data-cat='gateway'>
           <GatewayPane snap={snap} />
-        </div>
-        {/* ── 路由组：独立分类（两个总开关 + 用户组增删改 + 自动组只读列表）。
-               独立组件自持数据（自动组随清单变、候选表是运行期事实，
-               不往 settings-state 的全局快照里塞 —— 见 routing-groups.tsx 的头注） */}
-        <div className={paneClass('routing-groups')} data-cat='routing-groups'>
-          <RoutingGroupsPanel />
         </div>
         <div className={paneClass('retry')} data-cat='retry'>
           <RetryPane snap={snap} />

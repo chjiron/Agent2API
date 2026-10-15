@@ -305,13 +305,36 @@ pub async fn preview_group(State(state): State<ServerState>, body: Bytes) -> Res
         .unwrap_or_default();
     let store = state.store();
     let account_index = account_index(store);
+    let catalog = candidate_models(store);
     ok_json(coverage_json(
-        &catalog::session_models(store),
+        &catalog,
         &account_index,
         &models,
         &normalized_keys,
         &members,
     ))
+}
+
+/// 勾选式目录的候选模型表：聚合名条目 + `mergeKey`。
+///
+/// `平台/模型` 限定名副本（`scoped: true`，只在 `exposeScopedModels` 开启时由
+/// `/v1/models` 追加）**不进表**：它是给客户端「点名钉死某家」的发现性展示，
+/// 不是选择目标 —— 勾聚合名即覆盖各家拼写（同源键同一回事），限定名进表
+/// 只会让每个模型以 N 种前缀重复出现，且这些副本没有 `providers` 可标来源，
+/// 界面上会渲染成一批「未知来源」行（用户实测报告的 bug）。覆盖预览
+/// （`coverage_json`）也用这份表：命中计数按聚合名算，不把限定名副本重复计入。
+fn candidate_models(store: &crate::server::core::account_store::AccountStore) -> Vec<Value> {
+    catalog::session_models(store)
+        .into_iter()
+        .filter(|item| item.get("scoped").and_then(Value::as_bool) != Some(true))
+        .map(|mut item| {
+            let key = crate::server::core::models::merge_key(&crate::server::core::models::model_id(&item));
+            if let Some(object) = item.as_object_mut() {
+                object.insert("mergeKey".to_string(), Value::String(key));
+            }
+            item
+        })
+        .collect()
 }
 
 /// 覆盖预览：命中模型清单 + 每个成员能承接几个 + 空转项。
@@ -470,20 +493,7 @@ fn groups_view(state: &ServerState) -> Value {
         .collect();
     let settings = config::routing_settings();
     let accounts: Vec<Value> = account_index.values().cloned().collect();
-    // 覆盖预览（卡片上的「命中 N 个模型 / 有成员接不到活」）用同一份目录现算：
-    // 视图里省掉 `matched` 明细（那是弹窗才要的），只留计数与空转项。
-    // 目录条目补一个 `mergeKey`（同源键）：界面「勾选模型」时直接拿它维护
-    // `normalizedKeys` —— 前端不必复制一份 merge_key 规则去猜各家拼写。
-    let models: Vec<Value> = catalog::session_models(store)
-        .into_iter()
-        .map(|mut item| {
-            let key = crate::server::core::models::merge_key(&crate::server::core::models::model_id(&item));
-            if let Some(object) = item.as_object_mut() {
-                object.insert("mergeKey".to_string(), Value::String(key));
-            }
-            item
-        })
-        .collect();
+    let models: Vec<Value> = candidate_models(store);
     json!({
         "groups": groups.iter()
             .map(|group| group_json(group, &account_index, &models))

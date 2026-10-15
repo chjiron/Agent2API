@@ -129,7 +129,7 @@ function applyZoom(percent) {
 // ─── 页面导航 ────────────────────────────────
 
 const PAGE_KEY = 'workbuddy-desktop-page';
-const PAGES = ['overview', 'accounts', 'checkin', 'gateway', 'proxies', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
+const PAGES = ['overview', 'accounts', 'checkin', 'gateway', 'proxies', 'routing', 'keys', 'docs', 'logs', 'tasks', 'requests', 'settings'];
 /** 页签中文名：顶栏面包屑用。overview 的用户可见名是「报表」、gateway 的是「模型管理」
  *  （内部标识保持不变：localStorage 记忆、showPage 与 CSS 的 [data-page] 选择器都依赖它） */
 const PAGE_LABELS = {
@@ -138,6 +138,7 @@ const PAGE_LABELS = {
   checkin: wbI18n.t('签到中心'),
   gateway: wbI18n.t('模型管理'),
   proxies: wbI18n.t('网络代理'),
+  routing: wbI18n.t('路由组'),
   keys: wbI18n.t('网关 Key'),
   docs: wbI18n.t('文档'),
   logs: wbI18n.t('日志'),
@@ -206,6 +207,11 @@ function showPage(name, { persist = true } = {}) {
   // （账号弹窗里改过引用）都可能让它变过。面板内部保证「这次刷新一定落地」
   if (page === 'proxies') {
     void window.wbProxiesPanel?.load?.();
+  }
+  // 路由组页自持清单（组 + 自动组 + 候选表），切进去时拉一次最新：
+  // 模型清单的变动（新账号 / 新模型）会改变自动组与承接统计，本页不轮询、进页即刷
+  if (page === 'routing') {
+    void window.wbRoutingPanel?.load?.();
   }
   // 切到账号页时立刻补一次连接数：那条 2 秒轮询只在「当时就在账号页」时才发请求，
   // 切走的这段时间里缓存已经过期，不补一下会先看到几秒前的旧数字

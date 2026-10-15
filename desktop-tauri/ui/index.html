@@ -71,6 +71,7 @@
   <link rel="stylesheet" href="css/page-tasks.css">
   <link rel="stylesheet" href="css/page-checkin.css">
   <link rel="stylesheet" href="css/page-requests.css">
+  <link rel="stylesheet" href="css/page-routing.css">
   <link rel="stylesheet" href="css/page-settings.css">
   <!-- 更新日志（Markdown 正文 / 版本卡片 / 导航更新提示）：排在页面样式之后，
        需要时可覆盖 page-settings.css 里为旧的纯文本说明写的规则 -->
@@ -131,6 +132,12 @@
              「出网代理」仍可用，但推荐在这里配好、账号按名字引用 ——
              改一次地址，所有引用的账号一起生效。 -->
         <button class="nav-item" data-page="proxies" data-icon="proxies"><span class="ico"></span><span class="label" data-i18n="网络代理">网络代理</span></button>
+        <!-- 路由组：把「某几个模型先落到哪几个账号」配成可命名的组（成员 = 跨平台
+             账号池，顺序 = 组内队列）。放在「转发能力」里、紧跟模型管理与网络代理：
+             模型管理决定「请求发往哪家上游」，网络代理决定「走哪条线路出去」，这里
+             决定「这家上游先用哪个账号」。整页由 React 岛渲染
+             （ui-islands/src/islands/routing-page.tsx），对外契约 window.wbRoutingPanel = { load }。 -->
+        <button class="nav-item" data-page="routing" data-icon="route"><span class="ico"></span><span class="label" data-i18n="路由组">路由组</span></button>
         <button class="nav-item" data-page="keys" data-icon="key"><span class="ico"></span><span class="label" data-i18n="网关 Key">网关 Key</span></button>
         <!-- 文档：接口地址（Base URL / 三种对话协议 / 模型列表）与将来的使用说明。
              它原先在「网关 Key」页里，R8 按需求搬成独立一级菜单 —— 接口地址是
@@ -230,6 +237,13 @@
              （.panel / .panel-head / .models-table-wrap / .models-table / .panel-foot）。
              对外契约只有 window.wbProxiesPanel = { load }（app.js 切页时调）。 -->
         <section class="page" data-page="proxies"></section>
+
+        <!-- ─── 路由组 ───
+             「请求先落到哪几个账号」的配置中心：用户组（成员 = 跨平台账号池、
+             顺序 = 组内队列、承接模型 = 勾选式目录）与自动识别组（多家同名模型
+             自动并组）。整页由 React 岛渲染（ui-islands/src/islands/routing-page.tsx），
+             岛直接挂在这个 section 上。对外契约 window.wbRoutingPanel = { load }。 -->
+        <section class="page" data-page="routing"></section>
 
         <!-- ─── 网关 Key ───
              整页由 React 岛渲染（desktop-tauri/ui-islands/src/islands/keys-page.tsx，
