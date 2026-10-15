@@ -86,6 +86,7 @@ pub mod providers;
 pub mod proxy_pool;
 pub mod proxies;
 pub mod routing;
+pub mod routing_groups;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod sub_kernel;

@@ -935,6 +935,19 @@ pub const KEY_ROUTING_BREAKER_THRESHOLD: &str = "routingBreakerThreshold";
 pub const KEY_ROUTING_BREAKER_TIMEOUT: &str = "routingBreakerTimeoutSeconds";
 /// 恢复阈值：熔断放行后要连续成功几次才算恢复（`routingBreakerSuccessThreshold`）
 pub const KEY_ROUTING_BREAKER_SUCCESS: &str = "routingBreakerSuccessThreshold";
+/// 自动识别路由组开关（`routingAutoGroups`，**默认开**）。
+///
+/// 开启时：多个平台提供「归一化同源」的模型（同一模型的不同拼写，见
+/// `core::routing_groups::merge_key`）会自动成一个路由组，请求在该组的
+/// 全部账号间选路 —— 某家限流/欠费时自动用上别家的同名模型。
+pub const KEY_ROUTING_AUTO_GROUPS: &str = "routingAutoGroups";
+/// 暴露平台限定模型名开关（`exposeScopedModels`，默认关）。
+///
+/// 开启时 `/v1/models` 会在聚合名之外**追加**每家平台一条
+/// `平台id/模型id` 条目：客户端点名该名字即把请求钉死在那一家
+/// （与 Key 的可用提供商白名单求交）。关闭只影响**列表是否暴露**，
+/// 请求侧始终接受限定名（用户从别处拿到名字仍可用）。
+pub const KEY_EXPOSE_SCOPED_MODELS: &str = "exposeScopedModels";
 
 pub const ROUTING_STRATEGY_ORDER: &str = "order";
 pub const ROUTING_STRATEGY_ROTATE: &str = "rotate";
@@ -1035,6 +1048,10 @@ pub struct RoutingSettings {
     pub breaker_threshold: i64,
     pub breaker_timeout_seconds: i64,
     pub breaker_success_threshold: i64,
+    /// 自动识别路由组（`routingAutoGroups`，默认开）——见键常量的说明
+    pub auto_groups: bool,
+    /// 暴露平台限定模型名（`exposeScopedModels`，默认关）——见键常量的说明
+    pub expose_scoped_models: bool,
 }
 
 impl Default for RoutingSettings {
@@ -1048,6 +1065,8 @@ impl Default for RoutingSettings {
             breaker_threshold: 5,
             breaker_timeout_seconds: 60,
             breaker_success_threshold: 2,
+            auto_groups: true,
+            expose_scoped_models: false,
         }
     }
 }
@@ -1063,4 +1082,54 @@ pub struct RoutingPatch {
     pub breaker_threshold: Option<i64>,
     pub breaker_timeout_seconds: Option<i64>,
     pub breaker_success_threshold: Option<i64>,
+    pub auto_groups: Option<bool>,
+    pub expose_scoped_models: Option<bool>,
+}
+
+/// **组级**路由设置的覆盖（`routingGroups[].settings`）：每一项都是可选的，
+/// `None` = 继承全局设置 —— 用户只覆盖关心的那几项即可，其余跟着全局走。
+///
+/// 与 [`RoutingSettings`] 的关系是「补丁」而不是「另一份完整设置」：
+/// 组解析时用 [`Self::merge_into`] 合并成一份完整的 `RoutingSettings`
+/// 交给选路 —— 那之后的所有消费方（`plan_route` / 游标 / 退避写入点）
+/// 看到的都是一份普通设置，不需要认识「组覆盖」这回事。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RoutingGroupSettings {
+    pub strategy: Option<RouteStrategy>,
+    pub sticky: Option<StickyMode>,
+    pub failover_backoff: Option<bool>,
+    pub sink: Option<bool>,
+    pub breaker_enabled: Option<bool>,
+    pub breaker_threshold: Option<i64>,
+    pub breaker_timeout_seconds: Option<i64>,
+    pub breaker_success_threshold: Option<i64>,
+}
+
+impl RoutingGroupSettings {
+    /// 合并到全局设置上（组覆盖优先；未覆盖的项取全局值）。
+    pub fn merge_into(&self, global: RoutingSettings) -> RoutingSettings {
+        RoutingSettings {
+            strategy: self.strategy.unwrap_or(global.strategy),
+            sticky: self.sticky.unwrap_or(global.sticky),
+            failover_backoff: self.failover_backoff.unwrap_or(global.failover_backoff),
+            sink: self.sink.unwrap_or(global.sink),
+            breaker_enabled: self.breaker_enabled.unwrap_or(global.breaker_enabled),
+            breaker_threshold: self.breaker_threshold.unwrap_or(global.breaker_threshold),
+            breaker_timeout_seconds: self
+                .breaker_timeout_seconds
+                .unwrap_or(global.breaker_timeout_seconds),
+            breaker_success_threshold: self
+                .breaker_success_threshold
+                .unwrap_or(global.breaker_success_threshold),
+            // 两个总开关是**全局**的，组级不覆盖（它们描述的是目录/发现行为，
+            // 不是某条队列的排序偏好）
+            auto_groups: global.auto_groups,
+            expose_scoped_models: global.expose_scoped_models,
+        }
+    }
+
+    /// 是否一项覆盖都没有（UI 上显示成「全部继承」）。
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }

@@ -515,6 +515,12 @@ function RouteReplay({ row }: { row: RequestRow }) {
   const ordered = Array.isArray(route.ordered) ? route.ordered as Array<Record<string, unknown>> : []
   const blocked = Array.isArray(route.blocked) ? route.blocked as Array<Record<string, unknown>> : []
   const picked = String(route.picked || '')
+  // 命中的路由组（本次新增；null / 缺字段 = 全局队列）：组把候选池收窄过，
+  // 「为什么是这几个账号」的答案就在这一行 —— 自动组与用户组分开措辞，
+  // 前者是清单自动发现的（用户没配过任何东西）
+  const group = route.group && typeof route.group === 'object' && !Array.isArray(route.group)
+    ? route.group as Record<string, unknown>
+    : null
   return (
     <div className='text-[11.5px] leading-relaxed'>
       <div className='mb-1 text-muted-foreground'>
@@ -522,6 +528,10 @@ function RouteReplay({ row }: { row: RequestRow }) {
           strategy: strategyLabel, sticky: stickyLabel,
           hit: route.stickyHit === true ? t(' · 会话粘住') : '',
         })}
+        {group ? t(' · {kind}「{name}」', {
+          kind: group.auto === true ? t('自动识别组') : t('路由组'),
+          name: String(group.name || group.id || ''),
+        }) : ''}
       </div>
       {ordered.length ? (
         <ol className='m-0 list-none p-0'>

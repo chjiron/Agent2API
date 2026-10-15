@@ -1451,6 +1451,18 @@ pub fn set_routing(patch: RoutingPatch) -> bool {
                 .insert(KEY_ROUTING_BREAKER_SUCCESS.to_string(), Value::from(count));
             next.breaker_success_threshold = count;
         }
+        if let Some(enabled) = patch.auto_groups {
+            config
+                .raw
+                .insert(KEY_ROUTING_AUTO_GROUPS.to_string(), Value::Bool(enabled));
+            next.auto_groups = enabled;
+        }
+        if let Some(enabled) = patch.expose_scoped_models {
+            config
+                .raw
+                .insert(KEY_EXPOSE_SCOPED_MODELS.to_string(), Value::Bool(enabled));
+            next.expose_scoped_models = enabled;
+        }
         config.routing = next;
     })
 }

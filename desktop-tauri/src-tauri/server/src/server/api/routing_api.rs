@@ -104,6 +104,18 @@ pub async fn put_routing(State(_state): State<ServerState>, body: Bytes) -> Resp
     patch.failover_backoff = failover_backoff;
     patch.sink = sink;
     patch.breaker_enabled = breaker_enabled;
+    // 两个总开关（本次新增）：自动识别路由组与平台限定名暴露，都是普通的
+    // 布尔键（`bool_field` 已做类型校验），没有额外范围约束。
+    let auto_groups = match bool_field(config::KEY_ROUTING_AUTO_GROUPS) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let expose_scoped = match bool_field(config::KEY_EXPOSE_SCOPED_MODELS) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    patch.auto_groups = auto_groups;
+    patch.expose_scoped_models = expose_scoped;
     let int_field = |key: &str, min: i64, max: i64| -> Result<Option<i64>, Response> {
         match object.get(key) {
             None => Ok(None),
@@ -156,6 +168,8 @@ fn routing_json(settings: RoutingSettings) -> Value {
         config::KEY_ROUTING_BREAKER_THRESHOLD: settings.breaker_threshold,
         config::KEY_ROUTING_BREAKER_TIMEOUT: settings.breaker_timeout_seconds,
         config::KEY_ROUTING_BREAKER_SUCCESS: settings.breaker_success_threshold,
+        config::KEY_ROUTING_AUTO_GROUPS: settings.auto_groups,
+        config::KEY_EXPOSE_SCOPED_MODELS: settings.expose_scoped_models,
     })
 }
 
@@ -187,6 +201,14 @@ pub async fn get_routing_queue(
             .collect(),
         None => accounts.clone(),
     };
+    // ── 路由组（与转发选路同一解析）───────────────────────────────
+    // 用户组把候选收窄到成员并按**组内顺位**排序（与 `rotate::group_scope`
+    // 同一判据），自动组不动候选（它的作用在候选链扩池，上面
+    // `route_for_forward` 的返回值里已经体现）；策略取组级覆盖合并后的有效
+    // 设置 —— 面板画的顺序因此与转发实际会走的顺序始终一致（改造前两者共用
+    // `plan_route`，本次把**输入**也拉齐了）。
+    let group = model.as_deref().and_then(crate::server::core::routing_groups::resolve_for);
+    let (scoped, ranks) = crate::server::core::routing_groups::scope(group.as_ref(), scoped);
     let now = crate::server::logging::now_ms();
     let counts: HashMap<String, usize> = state
         .upstream()
@@ -207,7 +229,11 @@ pub async fn get_routing_queue(
         })
         .filter_map(|account| routing::account_id(account).map(str::to_string))
         .collect();
-    let settings = config::routing_settings();
+    let global = config::routing_settings();
+    let settings = match &group {
+        Some(group) => group.settings.merge_into(global),
+        None => global,
+    };
     // 面板只**看**当前状态，不做粘性查找、不前进轮转游标 —— 预演不该刷新
     // 任何会话的计时，也不该消耗下一次轮转
     let (sunk, resting, open) = state.upstream().route_queue_facts(now);
@@ -219,6 +245,7 @@ pub async fn get_routing_queue(
         limiter_blocked: &limiter_blocked,
         cursor: None,
         sticky_account: None,
+        ranks: &ranks,
     };
     let plan = routing::plan_route(&scoped, &keys, &counts, &[], now, &meta);
     let entry_json = |entry: &routing::PlanEntry| {
@@ -226,9 +253,9 @@ pub async fn get_routing_queue(
             "id": entry.id,
             "name": entry.name,
             "provider": entry.provider,
-            "providerLabel": crate::server::core::providers::kind_from_id(&entry.provider)
-                .map(|kind| crate::server::core::providers::meta(kind).label.to_string())
-                .unwrap_or_else(|| entry.provider.clone()),
+            // 展示名走 label_of：内置家与自定义家同一处解析（自定义 id 是
+            // `custom-…`，kind_from_id 认不出它）
+            "providerLabel": crate::server::core::providers::label_of(&entry.provider),
             "state": entry.state,
             "reason": entry.reason,
             "resetAt": if entry.reset_at > 0 { Value::from(entry.reset_at) } else { Value::Null },
@@ -238,6 +265,18 @@ pub async fn get_routing_queue(
     ok_json(json!({
         "strategy": settings.strategy.as_str(),
         "sticky": settings.sticky.as_str(),
+        // 命中的路由组（`null` = 全局队列）：面板据此显示「当前组」并解释
+        // 候选池为什么是这几个账号；用户组的成员顺序就是 `ordered` 的前后序，
+        // `variants` 是自动组各家的 (provider, 真名)
+        "group": group.as_ref().map(|group| json!({
+            "id": group.id,
+            "name": group.name,
+            "auto": group.auto,
+            "memberCount": group.members.len(),
+            "variants": group.variants.iter()
+                .map(|(provider, model)| json!([provider, model]))
+                .collect::<Vec<_>>(),
+        })).unwrap_or(Value::Null),
         "model": model.clone().map(Value::String).unwrap_or(Value::Null),
         "lastRequestModel": snapshot.last_request_model(),
         "pickedId": plan.ordered.first().map(|entry| entry.id.clone()).unwrap_or_default(),

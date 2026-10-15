@@ -1003,7 +1003,7 @@ function ModelsPage() {
             <TableFooter
               className='models-panel-foot'
               leading={custom
-                ? <>{t('自定义提供商的清单')}<b>{t('只属于这一家')}</b>{t('：这里的模型不会出现在其他家，别名也只在这一家内生效。改名称 / 协议 / Base URL 在账号页该家账号的「设置」→ 提供商一栏；整家不要了，鼠标移到左栏这家上点 × 删除（连同名下账号）。')}</>
+                ? <>{t('自定义提供商的清单')}<b>{t('只属于这一家')}</b>{t('：这里的模型不会出现在其他家，别名也只在这一家内生效。改名称 / 协议 / Base URL 在账号页该家账号的「设置」→ 提供商一栏；整个提供商不要了，鼠标移到左栏它上面点 × 删除（连同名下账号）。')}</>
                 : undefined}
               total={shown.length}
               range={paging.paged ? { start: paging.rangeStart, end: paging.rangeEnd } : null}

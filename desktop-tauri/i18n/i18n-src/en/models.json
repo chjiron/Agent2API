@@ -348,6 +348,7 @@
   "，跳过 {n} 个": ", {n} skipped",
   "，通常就不是账号问题了：先确认这个模型还在上游目录里（「获取模型」刷一次），再看默认绑定指向的上游模型对不对。": ", it's usually not an account problem: first confirm this model is still in the upstream catalog (run “Fetch models” once), then check whether the default binding points to the right upstream model.",
   "：": ": ",
+  "：这里的模型不会出现在其他家，别名也只在这一家内生效。改名称 / 协议 / Base URL 在账号页该家账号的「设置」→ 提供商一栏；整个提供商不要了，鼠标移到左栏它上面点 × 删除（连同名下账号）。": ": these models don’t show up under other providers, and aliases only apply inside this provider. To rename or change protocol / Base URL, use “Settings” → Provider on one of its accounts in the accounts page; to drop the whole provider, hover it in the left column and click × (its accounts go with it).",
   "：这里的模型不会出现在其他家，别名也只在这一家内生效。改名称 / 协议 / Base URL 在账号页该家账号的「设置」→ 提供商一栏；整家不要了，鼠标移到左栏这家上点 × 删除（连同名下账号）。": ": the models here won't appear under other providers, and aliases take effect only within this provider. To change the name / protocol / Base URL, use the “Settings” → Provider section of this provider's account on the Accounts page; to remove the whole provider, hover over it in the left rail and click × to delete it (along with its accounts).",
   "；其中 {keys} 由 models.dev 补齐": "; {keys} filled in by models.dev",
   "；首个失败：{error}": "; first failure: {error}"

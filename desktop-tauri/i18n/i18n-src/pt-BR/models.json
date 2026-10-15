@@ -348,6 +348,7 @@
   "，跳过 {n} 个": ", {n} ignorados",
   "，通常就不是账号问题了：先确认这个模型还在上游目录里（「获取模型」刷一次），再看默认绑定指向的上游模型对不对。": ", normalmente não é problema de conta: primeiro confirme que o modelo ainda está no catálogo upstream (rode “Buscar modelos” uma vez) e depois verifique se o modelo upstream apontado pelo vínculo padrão está correto.",
   "：": ":",
+  "：这里的模型不会出现在其他家，别名也只在这一家内生效。改名称 / 协议 / Base URL 在账号页该家账号的「设置」→ 提供商一栏；整个提供商不要了，鼠标移到左栏它上面点 × 删除（连同名下账号）。": ": estes modelos não aparecem em outros provedores, e aliases valem apenas dentro deste provedor. Para renomear ou mudar protocolo / Base URL, use “Configurações” → Provedor em uma conta deste provedor na página de contas; para remover o provedor inteiro, passe o mouse sobre ele na coluna da esquerda e clique em × (as contas dele vão junto).",
   "：这里的模型不会出现在其他家，别名也只在这一家内生效。改名称 / 协议 / Base URL 在账号页该家账号的「设置」→ 提供商一栏；整家不要了，鼠标移到左栏这家上点 × 删除（连同名下账号）。": ": os modelos daqui não aparecem em outros provedores e os aliases só valem dentro deste. Para alterar nome / protocolo / Base URL, use “Configurações” → campo do provedor nas contas desta família, na página de contas; se não quiser mais o provedor inteiro, passe o mouse sobre ele na barra lateral esquerda e clique em × para excluir (junto com as contas dele).",
   "；其中 {keys} 由 models.dev 补齐": "; {keys} preenchido(s) pelo models.dev",
   "；首个失败：{error}": "; primeira falha: {error}"

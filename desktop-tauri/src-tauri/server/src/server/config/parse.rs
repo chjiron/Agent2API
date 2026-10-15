@@ -440,5 +440,19 @@ pub(super) fn routing_from(map: &Map<String, Value>) -> RoutingSettings {
             ROUTING_BREAKER_MIN_SUCCESS,
             ROUTING_BREAKER_MAX_SUCCESS,
         ),
+        // 只有字面 `false` 算关闭：**默认开**。自动组是「同名模型跨家兜底」，
+        // 默认开让多平台用户直接受益；关掉的代价是回到「只有清单里正好有这个
+        // 名字的家才接」，两种默认值都不会弄坏请求（取向说明见键常量处）。
+        auto_groups: map
+            .get(KEY_ROUTING_AUTO_GROUPS)
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.auto_groups),
+        // 只有字面 `true` 算开启：**默认关**。它会往 /v1/models 里增添条目，
+        // 列表宽度是客户端体验的一部分，宁可让用户显式打开（理由同 cors_enabled
+        // 的「默认关」取向：默认值代价是「多做了一件界面没说清的事」）。
+        expose_scoped_models: map
+            .get(KEY_EXPOSE_SCOPED_MODELS)
+            .and_then(Value::as_bool)
+            .unwrap_or(defaults.expose_scoped_models),
     }
 }

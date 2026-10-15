@@ -134,6 +134,7 @@ import {
   PromptTextButton,
   gatewayEditedText,
 } from './settings-prompt-editor'
+import { RoutingGroupsPanel } from './routing-groups'
 import { t } from '../i18n'
 
 /**
@@ -1186,6 +1187,7 @@ function RoutingPane({ snap }: { snap: SettingsSnapshot }) {
   const sticky: RouteStickyValue =
     ROUTE_STICKY_OPTIONS.find(item => item.value === routing.sticky)?.value ?? 'auto'
   return (
+    <>
     <section className='panel'>
       <PanelHead
         title={t('账号路由')}
@@ -1228,6 +1230,11 @@ function RoutingPane({ snap }: { snap: SettingsSnapshot }) {
         <div className='hint retention-note'>{NOTES.routing}</div>
       </div>
     </section>
+      {/* ── 路由组（本次新增）：两个总开关 + 用户组增删改 + 自动组只读列表。
+             独立组件自持数据（自动组随清单变、候选表是运行期事实，
+             不往 settings-state 的全局快照里塞 —— 见 routing-groups.tsx 的头注） */}
+      <RoutingGroupsPanel />
+    </>
   )
 }
 

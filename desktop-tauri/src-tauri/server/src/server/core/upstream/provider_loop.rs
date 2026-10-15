@@ -183,6 +183,7 @@ fn take_switch(switches_left: &mut usize, total: usize) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn defer_to_next_account(
     service: &UpstreamService,
+    ctx: &ProviderContext<'_>,
     provider_ids: &[&str],
     cooldown_keys: &rotate::CooldownKeys<'_>,
     tried_ids: &mut Vec<String>,
@@ -194,15 +195,14 @@ fn defer_to_next_account(
     status_code: i32,
     switches_left: &mut usize,
     switch_total: usize,
-    pinned: Option<&str>,
 ) -> bool {
     if let Some(account_id) = target.account_id.clone() {
         if !tried_ids.contains(&account_id) {
             tried_ids.push(account_id);
         }
     }
-    let Some(next) =
-        rotate::pick_next_account(service, provider_ids, cooldown_keys, tried_ids, pinned)
+    // 顺延同样带 `ctx`（组与有效设置）：换号不越组、策略口径与第一级选路同源
+    let Some(next) = rotate::pick_next_account(service, ctx, provider_ids, cooldown_keys, tried_ids)
     else {
         return false;
     };
@@ -415,10 +415,18 @@ pub(super) async fn forward_with_providers(
     let with_mapping = crate::server::core::model_rules::current()
         .mappings_of(&model)
         .len() > 0;
+    // 路由组提示（本次新增）：有组时选路范围与策略都可能与全局不同，
+    // 日志要能回答「这次为什么是这几个家/这个顺序」——组在选路层才收窄账号，
+    // 候选链这一行仍画全部承载家（那是能力事实）。
+    let group_note = match ctx.routing_group {
+        Some(group) if group.auto => format!("，自动组「{}」", group.name),
+        Some(group) => format!("，路由组「{}」", group.name),
+        None => String::new(),
+    };
     logging::verbose(
         "[Upstream]",
         &format!(
-            "候选提供商 {}（按账号全局优先级选路{}）",
+            "候选提供商 {}（按账号全局优先级选路{}{group_note}）",
             provider_ids.join(" / "),
             if with_mapping { "，含映射" } else { "" },
         ),
@@ -565,10 +573,10 @@ async fn attempt_queue(
         }
         let target = rotate::select_target_account(
             service,
+            ctx,
             provider_ids,
             &cooldown_keys,
             &tried_ids,
-            ctx.pinned_account,
             &conv_key,
         )
         .await?;
@@ -634,12 +642,12 @@ async fn attempt_queue(
                                 );
                                 // 与内置家的动作 1 同款：还有额度时被 429 的
                                 // 垫底（见那边的说明）
-                                if config::routing_settings().sink && ctx.pinned_account.is_none() {
+                                if ctx.routing_settings.sink && ctx.pinned_account.is_none() {
                                     service.route.sink_mark(&account_id, logging::now_ms());
                                 }
                             } else {
                                 // 与内置家的动作 3 同款：失败退避 + 熔断计数
-                                let route_settings = config::routing_settings();
+                                let route_settings = ctx.routing_settings;
                                 if route_settings.failover_backoff {
                                     service.route.backoff_mark(&account_id, logging::now_ms());
                                 }
@@ -656,10 +664,10 @@ async fn attempt_queue(
                     }
                     match rotate::pick_next_account(
                         service,
+                        ctx,
                         provider_ids,
                         &cooldown_keys,
                         &tried_ids,
-                        ctx.pinned_account,
                     ) {
                         Some(next) => {
                             // 换号额度用尽 → 队列里即使还有人也不再顺延
@@ -764,10 +772,10 @@ async fn attempt_queue(
                     }
                     match rotate::pick_next_account(
                         service,
+                        ctx,
                         provider_ids,
                         &cooldown_keys,
                         &tried_ids,
-                        ctx.pinned_account,
                     ) {
                         Some(next) => {
                             // 换号额度用尽 → 队列里即使还有人也不再顺延
@@ -972,6 +980,7 @@ async fn attempt_queue(
                     }
                     if defer_to_next_account(
                         service,
+                        ctx,
                         provider_ids,
                         &cooldown_keys,
                         &mut tried_ids,
@@ -983,7 +992,6 @@ async fn attempt_queue(
                         error.status_code,
                         &mut switches_left,
                         switch_total,
-                        ctx.pinned_account,
                     ) {
                         continue 'accounts;
                     }
@@ -1070,7 +1078,7 @@ async fn attempt_queue(
                     // 「配置开着且有会话键」时绑 —— Turn / Off 档 ttl 为 None。
                     // 绑定无条件覆盖：会话换到新账号（前一个失败顺延过来）
                     // 时，粘的必须是现在这个能干活的。
-                    let route_settings = config::routing_settings();
+                    let route_settings = ctx.routing_settings;
                     if let Some(account_id) = target.account_id.as_deref() {
                         if route_settings.breaker_enabled {
                             service
@@ -1259,7 +1267,7 @@ async fn attempt_queue(
                             // 正常冷却，不算），排到所有没被 429 过的后面 —— 负载
                             // 摊开，而不是每次都回到队列头再撞一遍。成功一次或
                             // 重启后放出（见 route_state.rs）。
-                            if config::routing_settings().sink && ctx.pinned_account.is_none() {
+                            if ctx.routing_settings.sink && ctx.pinned_account.is_none() {
                                 service.route.sink_mark(&account_id, logging::now_ms());
                             }
                             // 日志文案与账号页的「限流」列同口径：以真名为主，
@@ -1269,10 +1277,10 @@ async fn attempt_queue(
                                 account_label(target.account.as_ref(), &account_id, &session);
                             match rotate::pick_next_account(
                                 service,
+                                ctx,
                                 provider_ids,
                                 &cooldown_keys,
                                 &tried_ids,
-                                ctx.pinned_account,
                             ) {
                                 Some(next) => {
                                     let next_label = account_display(&next);
@@ -1377,7 +1385,7 @@ async fn attempt_queue(
                             // 翻倍，上限 1 小时）；熔断：连续失败到阈值打开。
                             // 429（额度尽）不走这里 —— 它有自己的冷却机制，
                             // 且「等重置」比「退避」精确。
-                            let route_settings = config::routing_settings();
+                            let route_settings = ctx.routing_settings;
                             if route_settings.failover_backoff {
                                 service.route.backoff_mark(&account_id, logging::now_ms());
                             }
@@ -1409,6 +1417,7 @@ async fn attempt_queue(
                     // 失败」共用同一条路，判据不该有两份。
                     if defer_to_next_account(
                         service,
+                        ctx,
                         provider_ids,
                         &cooldown_keys,
                         &mut tried_ids,
@@ -1420,7 +1429,6 @@ async fn attempt_queue(
                         failure.error.status_code,
                         &mut switches_left,
                         switch_total,
-                        ctx.pinned_account,
                     ) {
                         continue 'accounts;
                     }
@@ -1510,10 +1518,10 @@ async fn attempt_queue(
                     );
                     match rotate::pick_next_account(
                         service,
+                        ctx,
                         provider_ids,
                         &cooldown_keys,
                         &tried_ids,
-                        ctx.pinned_account,
                     ) {
                         Some(next) => {
                             if !take_switch(&mut switches_left, switch_total) {
@@ -2165,8 +2173,13 @@ fn cap_cleared(
     }
 }
 
-/// 上游请求体里的模型名（缺失/非字符串给空串，与改造前一致）
-fn model_of(body: &Value) -> String {
+/// 上游请求体里的模型名（缺失/非字符串给空串，与改造前一致）。
+///
+/// `pub(super)`：`upstream::forward` 在装配 `ProviderContext` 之前要用它
+/// 解析路由组（`routing_groups::resolve_for`）—— 组与选路读的必须是同一个
+/// 名字（都是这一步的产物），各处自己取一次 `body["model"]` 就是两份可能
+/// 分叉的取值逻辑。
+pub(super) fn model_of(body: &Value) -> String {
     body.get("model")
         .and_then(Value::as_str)
         .unwrap_or("")

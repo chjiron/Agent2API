@@ -125,6 +125,14 @@ pub async fn get_session(State(state): State<ServerState>) -> Response {
 ///
 /// 模型未知 / 该模型下确实没有可用账号时给 null —— 界面回落到
 /// `currentAccountId`，宁可让它标一个「队列第一位」，也不要整列 ★ 凭空消失。
+///
+/// ── 路由组（本次新增）────────────────────────────────────────
+/// ★ 的候选口径必须与转发选路同源，组因此也在这里生效：
+///   - 用户组把候选收窄到成员账号（与 `rotate::group_accounts` 同一判据）；
+///   - 自动识别组不动候选（它的作用是候选链扩池，`route_for_forward` 的
+///     返回值里已经体现）。
+/// 收窄后一个可用成员都没有 → 给 null 而**不**回落到队列第一位：那种情况下
+/// 转发会直接 503（组里没有能承接的成员），标一个组外的账号更是错的。
 fn routed_account_id(accounts: &Value, model: Option<&str>, counts: &HashMap<String, usize>) -> Value {
     let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
         return Value::Null;
@@ -147,12 +155,23 @@ fn routed_account_id(accounts: &Value, model: Option<&str>, counts: &HashMap<Str
                 && !crate::server::core::limiter::token_skip_blocked(account, &token_facts, now)
         })
         .collect();
+    let group = crate::server::core::routing_groups::resolve_for(model);
+    // 组把候选收窄到成员（与 `rotate::group_scope` 同一判据），并带上**组内顺位**：
+    // ★ 与转发选路因此读同一套排序（成员顺序优先、全部账号成员内按拖拽顺序）。
+    let scoped = group.as_ref().is_some_and(|group| !group.members.is_empty());
+    let (candidate_accounts, ranks) =
+        crate::server::core::routing_groups::scope(group.as_ref(), candidate_accounts);
+    if scoped && candidate_accounts.is_empty() {
+        // 组成员里没有能承接这个模型的账号：转发会 503，★ 给空
+        return Value::Null;
+    }
     routing::pick_for_model(
         &candidate_accounts,
         model,
         &providers,
         counts,
-        logging::now_ms(),
+        &ranks,
+        now,
     )
     .and_then(|account| routing::account_id(&account).map(str::to_string))
     .map(Value::String)

@@ -279,6 +279,31 @@ pub fn panel_router(state: ServerState) -> Router {
             get(api::routing_api::get_routing).put(api::routing_api::put_routing),
         )
         .route("/api/routing/queue", get(api::routing_api::get_routing_queue))
+        // ── 路由组（模型路由组：成员（有序） × 模型匹配 × 组级策略）──
+        // 列表/新建 + 单组 更新/删除；每个写操作都返回全量视图（自动组与
+        // 候选表是运行期事实，见 `routing_groups_api` 的模块头）。挂 protected：
+        // 组配置决定请求用哪些账号转发，与 /api/routing 同级敏感。
+        .route(
+            "/api/routing-groups",
+            get(api::routing_groups_api::list_groups).post(api::routing_groups_api::create_group),
+        )
+        // 自定义自动识别组：沿用自动组的 id 落一条用户组（解析与列表都接管，
+        // 见 `routing_groups_api` 的模块头）。静态子路径与 `{id}` 同处一棵路由树，
+        // matchit 的「静态优先」保证它不会被当成组 id。
+        .route(
+            "/api/routing-groups/from-auto",
+            post(api::routing_groups_api::create_group_from_auto),
+        )
+        // 覆盖预览：弹窗里实时算「命中哪些模型、每个成员承接几个、谁空转」
+        // （纯计算不落盘；后端现算，避免前端复制一份归一化规则）
+        .route(
+            "/api/routing-groups/preview",
+            post(api::routing_groups_api::preview_group),
+        )
+        .route(
+            "/api/routing-groups/{id}",
+            patch(api::routing_groups_api::update_group).delete(api::routing_groups_api::delete_group),
+        )
         // ── 调试模式（设置页「通用 → 调试模式」）──
         // GET/PUT 开关；traffic 是按 id 取原始报文的详情端点（列表接口不返回
         // 报文，见 debug_api 的模块头）。挂 protected：报文含上游 URL 与请求体。

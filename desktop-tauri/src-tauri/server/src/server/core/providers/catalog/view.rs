@@ -40,16 +40,37 @@ fn advertised_names(
 
 /// 先在各提供商内判断绑定，再按对外名去重；不能先合并上游 ID 再拼别名，
 /// 否则某家关闭的映射会借另一家的同名上游重新出现在列表中。
+///
+/// ── 平台标识（本次新增）────────────────────────────────────
+/// 去重只决定「条目由谁认领」（第一条），**承载这个名字的家一个都不丢**：
+/// 每个条目带 `providers` / `providerLabels` 两个字段，列出全部能承接它的
+/// 家（精确/别名认领者 + 自动识别组打开时归一化同源的家）。界面据此画
+/// 平台徽标、组编辑页据此列「可点名哪些平台」。改造前这里只留认领者，
+/// 其余家被 `claimed` 静默吞掉 —— 「多个平台都有这个模型，列表里却只看得到
+/// 一家」正是它造成的。
+///
+/// 归一化补集是否计算由 `routingAutoGroups` 决定：关掉后「同名」只算精确/
+/// 别名命中，`providers` 列出的家与转发实际会用的候选池因此始终一致。
 fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, Value)> {
     let rules = model_rules::current();
-    let mut claimed = HashSet::new();
-    let mut result = Vec::new();
+    let auto = crate::server::config::routing_settings().auto_groups;
+    let keyed = if auto { Some(super::auto_groups::key_index(active)) } else { None };
+    // 小写名 → (原件里的展示名, 条目)；承载家单独一张表（保序）
+    let mut order: Vec<String> = Vec::new();
+    let mut items: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+    let mut carriers: std::collections::HashMap<String, Vec<(String, String)>> =
+        std::collections::HashMap::new();
     for (kind, manifest) in active {
         let provider = kind_id(*kind);
         let names = advertised_names(&rules, provider, manifest);
         for name in names {
             let Some(wire) = builtin_target(&rules, *kind, manifest, &name) else { continue };
-            if !claimed.insert(name.to_lowercase()) {
+            let lower = name.to_lowercase();
+            let entry = carriers.entry(lower.clone()).or_default();
+            if !entry.iter().any(|(known, _)| known == provider) {
+                entry.push((provider.to_string(), name.clone()));
+            }
+            if items.contains_key(&lower) {
                 continue;
             }
             let Some(upstream) = manifest.iter().find(|item| model_id(item) == wire.model) else { continue };
@@ -61,10 +82,90 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
                     object.insert("is_default".to_string(), Value::Bool(false));
                 }
             }
-            result.push((provider.to_string(), item));
+            order.push(lower.clone());
+            items.insert(lower, item);
         }
     }
-    result
+    // 归一化同源补集：每个名字按归一化键把同源的家补进承载表
+    if let Some(keyed) = &keyed {
+        for lower in &order {
+            let display = carriers
+                .get(lower)
+                .and_then(|vendors| vendors.first())
+                .map(|(_, name)| name.clone())
+                .unwrap_or_default();
+            let key = crate::server::core::models::merge_key(&display);
+            let Some(variants) = keyed.by_key.get(&key) else { continue };
+            let entry = carriers.entry(lower.clone()).or_default();
+            for (provider, wire) in variants {
+                if !entry.iter().any(|(known, _)| known == provider) {
+                    entry.push((provider.clone(), wire.clone()));
+                }
+            }
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|lower| {
+            let mut item = items.remove(&lower)?;
+            let vendors = carriers.remove(&lower).unwrap_or_default();
+            let ids: Vec<Value> = vendors
+                .iter()
+                .map(|(provider, _)| Value::String(provider.clone()))
+                .collect();
+            let labels: Vec<Value> = vendors
+                .iter()
+                .map(|(provider, _)| Value::String(super::super::label_of(provider)))
+                .collect();
+            let owner = vendors
+                .first()
+                .map(|(provider, _)| provider.clone())
+                .unwrap_or_default();
+            if let Some(object) = item.as_object_mut() {
+                object.insert("providers".to_string(), Value::Array(ids));
+                object.insert("providerLabels".to_string(), Value::Array(labels));
+            }
+            Some((owner, item))
+        })
+        .collect()
+}
+
+/// 追加**平台限定名**条目（`平台id/模型id`；`exposeScopedModels` 默认关）。
+///
+/// 每条聚合条目按自己的 `providers` 列追加一份限定名副本：`id` 换成
+/// `平台/名字`、`owned_by` 改成那一家，并带 `scoped: true` 供界面区分。
+/// 客户端点名限定名即把请求钉死在那一家（见 `parse_scoped` 与
+/// `forwarding_providers` 的限定名分支）。
+///
+/// 加在列表**最后**：聚合名（客户端习惯的裸名）排前面，限定名是发现性的
+/// 补充；与既有 id 撞名（某个模型恰好叫 `平台/名字`）时跳过 —— 已存在的那条
+/// 才是权威。
+fn append_scoped_items(data: &mut Vec<Value>) {
+    let mut claimed: HashSet<String> = data.iter().map(|item| model_id(item).to_lowercase()).collect();
+    let mut additions: Vec<Value> = Vec::new();
+    for item in data.iter() {
+        let id = model_id(item);
+        if id.is_empty() {
+            continue;
+        }
+        let Some(providers) = item.get("providers").and_then(Value::as_array) else { continue };
+        for provider in providers.iter().filter_map(Value::as_str) {
+            let scoped = format!("{provider}/{id}");
+            if !claimed.insert(scoped.to_lowercase()) {
+                continue;
+            }
+            let mut copy = item.clone();
+            if let Some(object) = copy.as_object_mut() {
+                object.insert("id".to_string(), Value::String(scoped));
+                object.insert("owned_by".to_string(), Value::String(provider.to_string()));
+                object.insert("scoped".to_string(), Value::Bool(true));
+                object.remove("providers");
+                object.remove("providerLabels");
+            }
+            additions.push(copy);
+        }
+    }
+    data.extend(additions);
 }
 
 pub fn models_response(store: &AccountStore, scope: Option<&KeyScope>) -> Value {
@@ -81,6 +182,13 @@ pub fn models_response(store: &AccountStore, scope: Option<&KeyScope>) -> Value 
     // 自定义家贡献了条目时，这份列表就不再是单/多家内置的来源了 ——
     // 与「多家内置」同一个词（aggregate），下游据此知道列表是拼出来的。
     let source = if data.len() > builtin_count { "aggregate" } else { source };
+    // 平台限定名条目（`exposeScopedModels`，默认关）：模型列表的平台标识
+    // （见 `public_builtin_items`）已经就绪，这里按它追加 `平台id/模型id`
+    // 条目 —— 开关只控制**列不列**，请求侧始终接受限定名（见 view 的
+    // `advertised_manifest_contains` 对限定名的处理）。
+    if crate::server::config::routing_settings().expose_scoped_models {
+        append_scoped_items(&mut data);
+    }
     list_response_from(data, source, refreshed_at)
 }
 
@@ -97,6 +205,12 @@ pub fn advertised_model_ids(store: &AccountStore) -> Vec<String> {
 }
 
 pub fn advertised_manifest_contains(store: &AccountStore, model: &str) -> bool {
+    // 平台限定名（`平台id/模型id`）：能不能路由由 `providers_for_model` 回答
+    // （清单解析得出 = 这一家承接），与「列表里列没列它」无关 ——
+    // `exposeScopedModels` 只控制暴露，请求侧始终接受限定名。
+    if super::parse_scoped(model).is_some() {
+        return !super::providers_for_model(model).is_empty();
+    }
     advertised_model_ids(store).iter().any(|id| id.eq_ignore_ascii_case(model))
 }
 

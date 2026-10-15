@@ -59,6 +59,7 @@
 //! 与 `config::init` 同一模式）：`ServerState::bootstrap` 与聚合层
 //! 拿到的是同一实例，刷新对两边同时可见。
 
+mod merge;
 mod shape;
 
 use std::sync::{Arc, OnceLock, RwLock};
@@ -80,6 +81,9 @@ use shape::{js_truthy, value_text};
 // `shape_value_text` 是 `shape::value_text` 的别名导出：聚合目录要按 `name`
 // 匹配模型（对齐 `ModelCatalog::get` 的第二段），需要与这里同一套 JS 文本化。
 pub use shape::{list_item, list_response_from, model_id, suggest_from, value_text as shape_value_text};
+
+// 模型名归一化与 slug（自动识别路由组 / 跨家发送名解析共用，见 merge.rs 的模块头）
+pub use merge::{merge_key, slug};
 
 /// 下游可见模型白名单：/v1/models 与路由解析只暴露这些模型。
 ///

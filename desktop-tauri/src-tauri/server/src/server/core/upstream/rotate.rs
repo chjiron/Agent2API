@@ -47,9 +47,11 @@ use crate::server::config;
 use crate::server::core::proxies::ResolvedProxy;
 use crate::server::core::providers::readiness;
 use crate::server::core::routing;
+use crate::server::core::routing_groups::ResolvedGroup;
 use crate::server::errors::{self, GatewayError};
 use crate::server::logging;
 
+use super::payload::ProviderContext;
 use super::{account_display, format_reset_text, has_access_token, priority_of, RouteTarget,
             UpstreamService};
 
@@ -107,10 +109,16 @@ pub(super) async fn session_for(
 /// `routing::CooldownKeys`）—— 传请求名会让别名请求的冷却查不到、已限额的
 /// 账号被反复选中。第三级「恢复最早的那个」同样按真名读 `resetAt`。
 ///
-/// `pinned` 是「这一轮只准用这个账号」（模型测试专用，见
-/// [`super::ForwardRequest::pinned_account`]）：候选池先被它收窄成一个账号，
-/// 上面那三级顺序对**那一个账号**照常生效 —— 它在限额冷却期时仍会被选中发一次，
-/// 这正是测试要的（把上游真实的 429 与恢复时间带回来，而不是换别人跑一遍）。
+/// `ctx` 携带本次请求的收窄条件与路由快照：`pinned_account` = 「这一轮只准用
+/// 这个账号」（模型测试专用，见 [`super::ForwardRequest::pinned_account`]：
+/// 候选池先被它收窄成一个账号，上面那三级顺序对**那一个账号**照常生效 ——
+/// 它在限额冷却期时仍会被选中发一次，这正是测试要的：把上游真实的 429 与
+/// 恢复时间带回来，而不是换别人跑一遍）；
+/// `routing_group` = 请求落在哪个路由组（`None` = 全局队列；用户组把候选池
+/// 收窄到成员账号，自动识别组不额外收窄 —— 它的作用在候选链扩池那一步，
+/// 见 `routing_groups::resolve_for` 与 `forwarding_providers`）；
+/// `routing_settings` = 组级覆盖合并后的**有效设置**（顺序/轮换、粘性、
+/// 退避、垫底、熔断都从这里取，全局队列时它就等于全局设置）。
 ///
 /// `conv_key` 是会话粘性键（`route_state::conversation_key` 的产物；空串 =
 /// 不粘）。粘性命中会刷新该键的最近使用时刻 —— 「缓存还在值上」的计时就在
@@ -121,15 +129,29 @@ pub(super) async fn session_for(
 /// 的数据源。
 pub(super) async fn select_target_account(
     service: &UpstreamService,
+    ctx: &ProviderContext<'_>,
     providers: &[&str],
     keys: &routing::CooldownKeys<'_>,
     tried_ids: &[String],
-    pinned: Option<&str>,
     conv_key: &str,
 ) -> Result<RouteTarget, GatewayError> {
-    let accounts = accounts_in_providers(service, providers, pinned);
-    // 这些家都没有账号记录 → 用第一家的默认登录态（环境变量旁路等）
+    let pinned = ctx.pinned_account;
+    let group = ctx.routing_group;
+    let (accounts, ranks) = group_scope(accounts_in_providers(service, providers, pinned), group);
+    // 组把候选收窄到成员后没有剩：这是可操作的配置问题（成员被删 / 成员所属
+    // 平台不承载该模型），给一条点名路由组的 503。没有组时保持原语义：这些家
+    // 都没有账号记录 → 用第一家的默认登录态（环境变量旁路等）。
     if accounts.is_empty() {
+        if let Some(group) = group.filter(|group| !group.members.is_empty()) {
+            return Err(GatewayError::with_status(
+                503,
+                format!(
+                    "路由组「{}」里没有能承接模型 {} 的成员账号：请检查组成员是否仍然存在、以及组内成员所属平台是否提供该模型",
+                    group.name,
+                    if keys.request_model().is_empty() { "(默认)" } else { keys.request_model() },
+                ),
+            ));
+        }
         return Ok(RouteTarget {
             provider: providers.first().copied().unwrap_or_default().to_string(),
             account_id: None,
@@ -152,18 +174,27 @@ pub(super) async fn select_target_account(
     // ── 策略与运行期状态快照（route_state.rs 的那份内存，读不改写）────
     // 粘性查找在这里顺手续了最近使用时刻 —— 「auto 档 5 分钟没往来就放手」
     // 的计时由它维持。
-    let settings = config::routing_settings();
+    //
+    // 设置取**请求级快照**（`ctx.routing_settings`，组级覆盖已在转发入口
+    // 合并好）：同一次请求内各家的选路/退避/熔断判定读同一份值，请求进行中
+    // 改设置不会让语义中途漂移（与 sanitize / prompt 的快照同一取向）。
+    let settings = ctx.routing_settings;
     let ttl = routing::sticky_ttl_ms(settings.sticky);
     let snap = service.route.snapshot(conv_key, now, ttl);
     // 轮转游标只在「本请求的第一次选路」前进：429 顺延的后续选路沿用同一
     // 起点往后走，否则一条请求会连跳好几位。粘性命中的轮次不前进 —— 会话
     // 一直粘着同一个账号时，轮转的「下一棒」留给新会话。
+    // 键带组前缀（`cursor_key`）：组内轮换互不干扰，改名/删组后游标自然另起。
     let cursor = if settings.strategy == config::RouteStrategy::Rotate
         && tried_ids.is_empty()
         && pinned.is_none()
         && snap.sticky_hit.is_none()
     {
-        Some(service.route.rotate_take(keys.request_model(), candidates.len()))
+        Some(
+            service
+                .route
+                .rotate_take(&cursor_key(group, keys.request_model()), candidates.len()),
+        )
     } else {
         None
     };
@@ -175,9 +206,10 @@ pub(super) async fn select_target_account(
         limiter_blocked: &balance_blocked_ids,
         cursor,
         sticky_account: snap.sticky_hit.as_deref(),
+        ranks: &ranks,
     };
     let plan = routing::plan_route(&candidates, keys, &counts, tried_ids, now, &meta);
-    let decision = decision_json(&plan, &settings, now);
+    let decision = decision_json(&plan, &settings, group, now);
     let mut excluded: Vec<String> = tried_ids.to_vec();
     for entry in &plan.ordered {
         if let Some(picked_session) = service.store.get_session_by_id(&entry.id) {
@@ -535,23 +567,29 @@ pub(super) fn connection_counts(service: &UpstreamService) -> HashMap<String, us
 /// 「下一个」与队列面板画的顺序因此一致；并发上限的过滤由此自动获得，
 /// 换号顺延不会把请求塞回一个已达上限的账号。
 ///
+/// `ctx` 的口径与 [`select_target_account`] 完全相同：组把候选收窄到成员账号
+/// （顺延**不越组**：组内没人了就是没人了，不会借到组外账号）、策略取组级
+/// 覆盖合并后的有效设置。
+///
 /// `pinned` 见 [`select_target_account`]：钉住账号时，候选池里只有那一个账号、
 /// 它已经在 `tried_ids` 里 —— 本函数因此必然返回 None，也就是「不顺延」。
 /// 这条是刻意的：模型测试问的是「这个账号行不行」，换个人跑通只会把结论搅浑。
 pub(super) fn pick_next_account(
     service: &UpstreamService,
+    ctx: &ProviderContext<'_>,
     providers: &[&str],
     keys: &routing::CooldownKeys<'_>,
     tried_ids: &[String],
-    pinned: Option<&str>,
 ) -> Option<Value> {
-    let accounts = accounts_in_providers(service, providers, pinned);
+    let pinned = ctx.pinned_account;
+    let group = ctx.routing_group;
+    let (accounts, ranks) = group_scope(accounts_in_providers(service, providers, pinned), group);
     // 换号顺延与第一级选路同一份候选剔除：被限制器拦下的账号不会在 429 之后
     // 被当作「下一个」重新塞进来
     let (candidates, balance_blocked_ids) = filter_limiter_blocked(&accounts, pinned);
     let counts = connection_counts(service);
     let now = logging::now_ms();
-    let settings = config::routing_settings();
+    let settings = ctx.routing_settings;
     // 顺延不走粘性（粘住的是「答对了的账号」，刚失败的那个不该被粘回来）；
     // 空会话键使 sticky_lookup 直接返回 None，其余快照（垫底 / 休息 / 熔断）
     // 照常参与排序
@@ -564,9 +602,32 @@ pub(super) fn pick_next_account(
         limiter_blocked: &balance_blocked_ids,
         cursor: None,
         sticky_account: None,
+        ranks: &ranks,
     };
     let plan = routing::plan_route(&candidates, keys, &counts, tried_ids, now, &meta);
     plan.ordered.into_iter().next().map(|entry| entry.account)
+}
+
+/// 把候选账号按路由组的成员表收窄，并算出**组内顺位**（账号 id → 位次）。
+///
+/// 判据本体在 `routing_groups::scope`（转发选路、★ 推算、队列面板三处共用
+/// 同一份实现 —— 面板画的顺序与转发实际会走的顺序因此不可能分叉），这里只
+/// 是转发侧的调用点。
+fn group_scope(
+    accounts: Vec<Value>,
+    group: Option<&ResolvedGroup>,
+) -> (Vec<Value>, HashMap<String, usize>) {
+    crate::server::core::routing_groups::scope(group, accounts)
+}
+
+/// 轮转游标的键：有组时按「组×模型」分键（组内轮换互不干扰，不同组的同名
+/// 模型也不共享游标），无组保持「按模型」的旧键 —— 不开组功能时游标行为
+/// 与改造前逐字一致。
+fn cursor_key(group: Option<&ResolvedGroup>, model: &str) -> String {
+    match group {
+        Some(group) => format!("{}|{}", group.id, model),
+        None => model.to_string(),
+    }
 }
 
 /// 选路决策快照（请求日志「路由回放」的数据源）。
@@ -576,6 +637,7 @@ pub(super) fn pick_next_account(
 fn decision_json(
     plan: &routing::RoutePlan,
     settings: &config::RoutingSettings,
+    group: Option<&ResolvedGroup>,
     now: i64,
 ) -> Value {
     let _ = now;
@@ -591,6 +653,14 @@ fn decision_json(
     json!({
         "strategy": settings.strategy.as_str(),
         "sticky": settings.sticky.as_str(),
+        // 命中的路由组（`null` = 全局队列）：请求日志的「路由回放」要能回答
+        // 「为什么候选池是这几个账号」——组把成员收窄过，这一条就是答案
+        "group": group.map(|group| json!({
+            "id": group.id,
+            "name": group.name,
+            "auto": group.auto,
+            "memberCount": group.members.len(),
+        })).unwrap_or(Value::Null),
         "stickyHit": plan.sticky_hit,
         "picked": plan.ordered.first().map(|entry| entry.id.clone()).unwrap_or_default(),
         "ordered": plan.ordered.iter().take(12).map(entry_json).collect::<Vec<_>>(),

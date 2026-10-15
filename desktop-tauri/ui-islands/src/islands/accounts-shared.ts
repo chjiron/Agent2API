@@ -245,6 +245,21 @@ export type AccountsBridge = {
   setRoutingConfig(patch: Record<string, unknown>): Promise<Record<string, unknown> | null | undefined>
   getRoutingQueue(model?: string): Promise<Record<string, unknown> | null | undefined>
   /**
+   * 路由组（设置页「账号路由」区的组管理块，见 routing-groups.tsx）：
+   * 读视图与写操作都过这一组方法；写操作返回**全量视图**（用户组 + 自动组 +
+   * 候选表），界面就地重绘。视图类型声明在 settings-model（本页的数据模型层），
+   * 这里用 inline `import(...)` 做 type-only 引入 —— 编译期擦除，不产生
+   * 运行时依赖，也不引入任何模块环。
+   */
+  getRoutingGroups(): Promise<import('./settings-model').RoutingGroupsPayload | null | undefined>
+  createRoutingGroup(payload: Record<string, unknown>): Promise<import('./settings-model').RoutingGroupsPayload | null | undefined>
+  /** 自定义自动识别组：沿用自动组 id 落一条可编辑的用户组（接管解析与列表） */
+  createRoutingGroupFromAuto(payload: Record<string, unknown>): Promise<import('./settings-model').RoutingGroupsPayload | null | undefined>
+  /** 覆盖预览：命中模型 × 成员承接数 × 空转项（弹窗实时调用，纯计算） */
+  previewRoutingGroup(payload: Record<string, unknown>): Promise<import('./settings-model').RoutingGroupCoverage | null | undefined>
+  updateRoutingGroup(id: string, patch: Record<string, unknown>): Promise<import('./settings-model').RoutingGroupsPayload | null | undefined>
+  deleteRoutingGroup(id: string): Promise<import('./settings-model').RoutingGroupsPayload | null | undefined>
+  /**
    * 批量操作（后端 `POST /api/accounts/batch`）。`proxy` 与 `maxConcurrent` 是
    * 两个带参动作的载荷：前者对应 action=proxy（null = 改为直连），后者对应
    * action=concurrency（0 = 不限）。**两条桥都按字段白名单转发**（bridge.rs /

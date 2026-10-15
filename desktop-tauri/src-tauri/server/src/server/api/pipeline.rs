@@ -275,8 +275,15 @@ pub fn resolve_model(
         // 白名单本身与「有没有账号」无关，但**没有账号时这把 Key 的路由照样
         // 不通**，报「不在白名单里」会把用户指向网关 Key 页，而真正要做的是
         // 先加账号。
-        if has_available_providers(state.store())
-            && !key_scope::allows_model(scope, &requested_model)
+        //
+        // ── 平台限定名按**裸名**再判一次（本次新增）─────────────────
+        // 用户在白名单里勾的是「模型」（它们是清单里的 id，不带平台前缀），
+        // 限定名 `平台id/模型id` 只是同一个模型的点名写法 —— 只按整串比对
+        // 会把勾选过的模型判成「不在白名单里」。裸名命中即放行。
+        let allowed_by_key = key_scope::allows_model(scope, &requested_model)
+            || crate::server::core::providers::catalog::parse_scoped(&requested_model)
+                .is_some_and(|(_, bare)| key_scope::allows_model(scope, &bare));
+        if has_available_providers(state.store()) && !allowed_by_key
         {
             return Err(GatewayError::with_status(404, format!(
                 "模型 '{requested_model}' 不可用：不在这把网关 Key 的可用模型列表里"

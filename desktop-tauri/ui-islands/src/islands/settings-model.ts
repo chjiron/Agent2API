@@ -190,6 +190,132 @@ export function modelsDevStateText(state: ModelsDevView): string {
   })
 }
 
+/* ─── 路由组（设置页「账号路由」区的组管理块，见 routing-groups.tsx）─── */
+
+/**
+ * 一条组成员（**顺序即组内顺位**：列表顺序就是这个组的队列顺序）。
+ *
+ * `provider` = 全部账号（该平台的所有账号，含以后新增的；`accounts` 是
+ * **组内优先顺序的覆盖** —— 界面拖拽维护，空 = 未点名、账号间按全局优先级）；
+ * `account` = 指定账号（精确到某一条记录）。`missing` = 后端标的失效
+ * （平台未注册 / 指定账号已不存在），界面据此提示替换。
+ */
+export type RoutingGroupMemberView = {
+  type: 'provider' | 'account'
+  id: string
+  /** 全部账号，该平台的组内优先顺序覆盖（界面拖拽维护；空 = 未点名） */
+  accounts?: string[]
+  /** 全部账号：展示名；指定账号：账号备注名 */
+  name?: string
+  label?: string
+  provider?: string
+  providerLabel?: string
+  enabled?: boolean
+  missing?: boolean
+}
+
+/** 组级策略覆盖：null = 继承全局（与后端 `RoutingGroupSettings` 的 Option 一一对应） */
+export type RoutingGroupSettingsView = {
+  strategy: string | null
+  sticky: string | null
+  failoverBackoff: boolean | null
+  sink: boolean | null
+  breakerEnabled: boolean | null
+  breakerThreshold: number | null
+  breakerTimeoutSeconds: number | null
+  breakerSuccessThreshold: number | null
+}
+
+/**
+ * 覆盖预览（后端 `coverage_json`）：这个组的匹配规则到底接住了什么、
+ * 每个成员能承接几个、哪些成员/模式空转 —— 组编辑器最容易说不清的那层关系。
+ * 视图（列表卡片）里 `matched` 省略，只有计数与空转项；预览接口给明细（最多 50 条）。
+ */
+export type RoutingGroupCoverage = {
+  matchedCount: number
+  matched?: Array<{
+    id: string
+    carriers: Array<{ id: string; label: string; member: boolean }>
+  }>
+  truncated?: boolean
+  /** 成员键（`provider:id` / `account:id`）→ 该成员能承接的命中模型数 */
+  memberServes: Array<{ key: string; serves: number }>
+  /** 目录里没有任何模型被它命中的模式（永远不会接住请求） */
+  orphanPatterns: string[]
+  /** 承接数为 0 的成员键（一条请求也落不到它） */
+  unservedMembers: string[]
+}
+
+/** 一个用户路由组（`GET /api/routing-groups` 的 groups[]） */
+export type RoutingGroupView = {
+  id: string
+  name: string
+  enabled: boolean
+  models: string[]
+  /**
+   * 同源键集合（**由「勾选模型」自动维护**）：请求名的归一化键落在集合里即命中
+   * —— 勾一个模型就覆盖各家拼写（大小写、版本点号、快照日期等差异）。
+   */
+  normalizedKeys: string[]
+  members: RoutingGroupMemberView[]
+  settings: RoutingGroupSettingsView
+  /** 启用 + 有成员 + （有模式或归一化键）（空组不承接任何请求） */
+  active: boolean
+  /** 从自动识别组接管来的（沿用 auto- id；删除即回到自动识别） */
+  fromAuto: boolean
+  /** 覆盖预览（卡片上的「命中 N 个模型 / 有成员接不到活」） */
+  coverage: RoutingGroupCoverage
+  auto: false
+}
+
+/** 一个自动识别组（只读；variants = 各家的真名，拼写差异在这里一眼可见） */
+export type RoutingAutoGroupView = {
+  id: string
+  name: string
+  key: string
+  auto: true
+  variants: Array<{ provider: string; providerLabel?: string; model: string }>
+  /** 被同归一化键的用户组接管时 = 那个组的名字（界面提示 + 减淡） */
+  coveredBy?: string | null
+}
+
+/** 候选模型（带平台标识与同源键：providers / providerLabels 与 /v1/models 同源） */
+export type RoutingGroupModelOption = {
+  id: string
+  name?: string
+  providers?: string[]
+  providerLabels?: string[]
+  /** 归一化同源键（勾选这个模型时自动加进组的 `normalizedKeys`） */
+  mergeKey?: string
+}
+
+/** 组成员选择器的账号候选（精简形态） */
+export type RoutingGroupAccountOption = {
+  id: string
+  name?: string
+  provider?: string
+  providerLabel?: string
+  enabled?: boolean
+}
+
+/** 「加入全部账号」的平台候选（注册表 + 自定义家，各带可用账号数） */
+export type RoutingGroupProviderOption = {
+  id: string
+  label?: string
+  count?: number
+}
+
+/** 路由组全量视图（每个写操作都返回它，界面就地重绘） */
+export type RoutingGroupsPayload = {
+  groups: RoutingGroupView[]
+  autoGroups: RoutingAutoGroupView[]
+  autoGroupsEnabled: boolean
+  exposeScopedModels: boolean
+  models: RoutingGroupModelOption[]
+  accounts: RoutingGroupAccountOption[]
+  providers: RoutingGroupProviderOption[]
+}
+
 /** 本页用到的壳 / HTTP 桥（方法名与 bridge.rs 一一对应，一个都不能改） */
 export type SettingsBridge = {
   /** 'desktop' | 'web'：面板登录那一块只在网页端有意义 */
@@ -216,6 +342,13 @@ export type SettingsBridge = {
   // ── 账号路由（「路由」分类）：GET/PUT /api/routing，PUT 返回生效后的全量值 ──
   getRoutingConfig(): Promise<unknown>
   setRoutingConfig(patch: Record<string, unknown>): Promise<unknown>
+  // ── 路由组（同一分类的组管理块）：写操作都返回全量视图（见 routing-groups.tsx）──
+  getRoutingGroups(): Promise<RoutingGroupsPayload | null | undefined>
+  createRoutingGroup(payload: Record<string, unknown>): Promise<RoutingGroupsPayload | null | undefined>
+  createRoutingGroupFromAuto(payload: Record<string, unknown>): Promise<RoutingGroupsPayload | null | undefined>
+  previewRoutingGroup(payload: Record<string, unknown>): Promise<RoutingGroupCoverage | null | undefined>
+  updateRoutingGroup(id: string, patch: Record<string, unknown>): Promise<RoutingGroupsPayload | null | undefined>
+  deleteRoutingGroup(id: string): Promise<RoutingGroupsPayload | null | undefined>
   getDebug(): Promise<unknown>
   saveDebug(enabled: boolean): Promise<unknown>
   getSanitize(): Promise<unknown>

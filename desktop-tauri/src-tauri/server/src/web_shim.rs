@@ -769,6 +769,21 @@ pub fn shim_js() -> &'static str {
     getRoutingQueue: function (model) {
       return call('GET', '/api/routing/queue' + (model ? '?model=' + encodeURIComponent(model) : ''));
     },
+    // ── 路由组（与 bridge.rs 的同名方法成对）──
+    getRoutingGroups: function () { return call('GET', '/api/routing-groups'); },
+    createRoutingGroup: function (payload) { return call('POST', '/api/routing-groups', payload || {}); },
+    createRoutingGroupFromAuto: function (payload) {
+      return call('POST', '/api/routing-groups/from-auto', payload || {});
+    },
+    previewRoutingGroup: function (payload) {
+      return call('POST', '/api/routing-groups/preview', payload || {});
+    },
+    updateRoutingGroup: function (id, patch) {
+      return call('PATCH', '/api/routing-groups/' + encodeURIComponent(id), patch || {});
+    },
+    deleteRoutingGroup: function (id) {
+      return call('DELETE', '/api/routing-groups/' + encodeURIComponent(id));
+    },
 
     // ── 出网代理 ──
     getProxies: function () { return call('GET', '/api/proxies'); },

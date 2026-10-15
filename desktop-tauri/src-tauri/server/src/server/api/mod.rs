@@ -99,6 +99,7 @@ pub mod qoder_umid;
 pub mod queue_api;
 pub mod retry_api;
 pub mod routing_api;
+pub mod routing_groups_api;
 pub mod sanitize;
 pub mod scheduled_tasks;
 pub mod session;

@@ -238,6 +238,7 @@ pub fn pick_account_by_priority(
     keys: &CooldownKeys<'_>,
     counts: &HashMap<String, usize>,
     exclude_ids: &[String],
+    ranks: &HashMap<String, usize>,
     now: i64,
 ) -> Option<Value> {
     let mut candidates: Vec<Value> = accounts
@@ -259,7 +260,7 @@ pub fn pick_account_by_priority(
     if candidates.is_empty() {
         return None;
     }
-    candidates.sort_by(compare_by_priority);
+    candidates.sort_by(|a, b| compare_with_ranks(a, b, ranks));
     candidates.into_iter().next()
 }
 
@@ -297,11 +298,15 @@ fn at_concurrency_limit(account: &Value, id: &str, counts: &HashMap<String, usiz
 /// [`pick_account_by_priority`]）：★ 推算拿得到运行时计数就传（`/api/session`
 /// 从 `UpstreamService::connections()` 取），拿不到就传空表 = 并发不过滤 ——
 /// 宁可 ★ 少剔一个忙账号，也不要让整条推算在缺数据时静默失效。
+///
+/// `ranks` 是组内顺位（用户组的成员顺序；空表 = 无组/自动组 = 全局优先级）：
+/// ★ 与转发选路因此在同一套排序下推算（见 `compare_with_ranks`）。
 pub fn pick_for_model(
     accounts: &[Value],
     model: &str,
     providers: &[&str],
     counts: &HashMap<String, usize>,
+    ranks: &HashMap<String, usize>,
     now: i64,
 ) -> Option<Value> {
     let candidates: Vec<Value> = accounts
@@ -316,7 +321,7 @@ pub fn pick_for_model(
         .cloned()
         .collect();
     let keys = CooldownKeys::new(model);
-    pick_account_by_priority(&candidates, &keys, counts, &[], now)
+    pick_account_by_priority(&candidates, &keys, counts, &[], ranks, now)
 }
 
 /// 账号记录上的 provider id（缺失按默认 provider 兜底，与 store 的
@@ -369,7 +374,9 @@ pub fn describe_route_decision(
     }
     // 排障快照，拿不到运行时的在途计数（它住在 UpstreamService 里），
     // 传空表 = 并发过滤不生效 —— 这里只回答「按启用/限流该选谁」。
-    let picked = pick_account_by_priority(accounts, &keys, &HashMap::new(), exclude_ids, now);
+    // 组内顺位同样拿不到（它由调用方的组上下文给出）：空表 = 全局优先级。
+    let picked =
+        pick_account_by_priority(accounts, &keys, &HashMap::new(), exclude_ids, &HashMap::new(), now);
     let priority = picked
         .as_ref()
         .map(|account| normalize_priority_value_of(account))
@@ -425,6 +432,25 @@ fn compare_by_priority(a: &Value, b: &Value) -> std::cmp::Ordering {
     let (a_priority, a_added) = key(a);
     let (b_priority, b_added) = key(b);
     by_priority_order((a_priority, a_added as i64), (b_priority, b_added as i64))
+}
+
+/// **组内顺位优先**的排序（用户组；`ranks` 为空表时与 [`compare_by_priority`]
+/// 逐字一致）：位次小的在前；同一位次（全部账号成员里未点名的账号，或不在表里的
+/// 账号 —— 理论上不会出现，防御性按队尾）再按全局优先级与加入时间。
+fn compare_with_ranks(a: &Value, b: &Value, ranks: &HashMap<String, usize>) -> std::cmp::Ordering {
+    if !ranks.is_empty() {
+        let rank = |account: &Value| -> usize {
+            account_id(account)
+                .and_then(|id| ranks.get(id))
+                .copied()
+                .unwrap_or(usize::MAX)
+        };
+        let (left, right) = (rank(a), rank(b));
+        if left != right {
+            return left.cmp(&right);
+        }
+    }
+    compare_by_priority(a, b)
 }
 
 /// 公开形态里的 priority（归一后的数值）——对应 Node 在日志里打印的 `priority`。
@@ -506,6 +532,12 @@ pub struct PlanMeta<'a> {
     pub cursor: Option<usize>,
     /// 粘性命中的账号 id（`None` = 无命中）
     pub sticky_account: Option<&'a str>,
+    /// **组内顺位**（账号 id → 位次；空表 = 没有组或自动组 = 全局优先级）。
+    ///
+    /// 用户组的成员列表顺序就是组内队列顺序（见
+    /// `routing_groups::ResolvedGroup::rank_of`）：排序先看位次、同一位次
+    /// （全部账号成员里未点名的账号）再按全局优先级。空表时与改造前逐字一致。
+    pub ranks: &'a HashMap<String, usize>,
 }
 
 /// 时间戳 → 「HH:MM」短文案（原因句里用，按**操作者本机时区** —— 与请求
@@ -530,7 +562,7 @@ fn clock_text(reset_at: i64, now: i64) -> String {
 /// 把可用候选按策略排出先后（不处理垫底 / 休息 / 熔断那三层修饰）。
 fn base_order(candidates: &[Value], strategy: RouteStrategy, meta: &PlanMeta<'_>) -> Vec<Value> {
     let mut sorted: Vec<Value> = candidates.to_vec();
-    sorted.sort_by(compare_by_priority);
+    sorted.sort_by(|a, b| compare_with_ranks(a, b, meta.ranks));
     match strategy {
         RouteStrategy::Order => sorted,
         RouteStrategy::Rotate => {

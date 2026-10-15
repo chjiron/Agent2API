@@ -108,6 +108,26 @@ pub(super) struct ProviderContext<'a> {
     /// 读同一份，语义不会中途漂移。收窄的语义见
     /// [`super::ForwardRequest::pinned_account`] 与 `rotate::accounts_in_providers`。
     pub pinned_account: Option<&'a str>,
+    /// 本次请求命中的**路由组**（`None` = 全局队列；见
+    /// `core::routing_groups::resolve_for`）。
+    ///
+    /// 用户组把候选池收窄到成员账号（选路与换号两处同一份过滤，顺延不越组）；
+    /// 自动识别组不额外收窄 —— 它的作用在候选链扩池那一步
+    /// （`forwarding_providers` 的归一化补集），到这里只是带着组名进决策快照。
+    ///
+    /// 生命周期由 `upstream::forward` 的栈帧持有（与 `key_scope` / `prompt`
+    /// 同一模式）。**模型测试（钉住账号）恒为 `None`**：测试问的是「这个账号
+    /// 行不行」，组的成员限制会把被测账号挡在外 —— 见 `upstream::forward`
+    /// 解析处对 `pinned_account` 的处理。
+    pub routing_group: Option<&'a crate::server::core::routing_groups::ResolvedGroup>,
+    /// 本次请求的**有效路由设置**（组级覆盖已合并进全局的请求级快照）。
+    ///
+    /// 为什么随请求取快照而不是每处现读全局设置：组级策略要求「选路 / 退避
+    /// 写入 / 熔断判定 / 垫底标记」读**同一份**值 —— 各处现读会出现「按组的
+    /// 顺序选路、按全局的退避记账」这类撕裂；快照同时让请求进行中改设置不再
+    /// 中途生效（与 `sanitize_fingerprints` / `prompt` 的快照同一取向）。
+    /// `Copy` 值，随 context 按值传递。
+    pub routing_settings: crate::server::config::RoutingSettings,
     /// 跳过按模型路由的启停门禁（模型测试的「未启用也能测」；语义与取舍见
     /// [`super::ForwardRequest::ignore_model_gate`]）。候选链改从 `key_scope`
     /// 白名单取 —— 它是唯一的候选来源，两处读的是同一份事实。

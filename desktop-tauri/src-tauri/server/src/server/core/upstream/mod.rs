@@ -391,6 +391,28 @@ impl UpstreamService {
         // 钉住的账号与它同样处理：ownership 移出来、借给 context，
         // 于是 `request` 在下面不再被借用（理由同上一条）
         let pinned_account = request.pinned_account;
+        // ── 路由组解析（用户组 → 自动识别组 → None=全局队列）──────────
+        // 在这里解析一次、随 context 借给整条转发链（选路 / 换号 / 退避记账
+        // 读同一份，见 `ProviderContext::routing_group` 的说明）。
+        //
+        // 模型测试（`pinned_account` 非空）**跳过解析**：测试问的是「这个
+        // 账号行不行」，路由组的成员限制会把被测账号挡在候选之外，结论就
+        // 不是测试要的那个了（组对测试无意义 —— 它本来就用 `allowed_providers`
+        // 把候选钉成了一家）。
+        let routing_group = if pinned_account.is_some() {
+            None
+        } else {
+            crate::server::core::routing_groups::resolve_for(&provider_loop::model_of(
+                &upstream_body,
+            ))
+        };
+        // 有效路由设置 = 组级覆盖合并进全局的**请求级快照**（组级策略让
+        // 「选路/退避/熔断/垫底」必须读同一份值，见那个字段的说明）
+        let global_routing = crate::server::config::routing_settings();
+        let routing_settings = match &routing_group {
+            Some(group) => group.settings.merge_into(global_routing),
+            None => global_routing,
+        };
         let context = payload::ProviderContext {
             body: &upstream_body,
             stream: request.stream,
@@ -400,6 +422,8 @@ impl UpstreamService {
             prompt,
             key_scope: key_scope.as_ref(),
             pinned_account: pinned_account.as_deref(),
+            routing_group: routing_group.as_ref(),
+            routing_settings,
             // bool 是 Copy，直接读：不存在上面那两条的借用问题
             ignore_model_gate: request.ignore_model_gate,
         };

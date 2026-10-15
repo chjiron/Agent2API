@@ -64,7 +64,7 @@ const DOMAIN_RULES = [
   { domain: 'accounts', files: ['accounts-page.tsx', 'accounts-shared.ts', 'accounts-columns.ts', 'accounts-store.ts', 'accounts-panels.tsx', 'accounts-queue-drag.ts', 'accounts-dialogs.tsx', 'accounts-dialog-limiter.tsx', 'accounts-dialog-usage.tsx', 'accounts-credit-detail.tsx', 'accounts-data.ts', 'accounts-domain.ts', 'zcode-plans-modal.tsx'] },
   { domain: 'add-account', files: ['add-custom-provider.tsx', 'custom-provider-ui.js', 'providers.js', 'preset-providers.js', 'web-login.js', 'sms-login.js', 'autoclaw-oauth.js', 'aliyun-captcha.js', 'zcode-claim.js', 'zcode-captcha-pool.js', 'codearts-welfare.js'], prefixes: ['add-account-', 'add-provider-'] },
   { domain: 'models', files: ['model-capability.ts', 'model-capability-dialog.tsx', 'model-test-dialog.tsx'], prefixes: ['models-'] },
-  { domain: 'settings', files: ['units.js'], prefixes: ['settings-'] },
+  { domain: 'settings', files: ['units.js', 'routing-groups.tsx'], prefixes: ['settings-'] },
   { domain: 'update', files: ['upgrade-panel.js'], prefixes: ['update-'] },
   { domain: 'keys', files: ['keys-page.tsx'] },
   { domain: 'proxies', files: ['proxies-page.tsx', 'proxies-state.ts'] },

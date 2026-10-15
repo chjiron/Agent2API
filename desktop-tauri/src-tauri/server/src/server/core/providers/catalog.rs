@@ -4,6 +4,7 @@
 //! 不会禁用它指向的上游模型，也不会影响仍开启的别名。
 //! 清单来源在本文件，绑定解析在 routing.rs，对外与管理视图在 view.rs。
 
+mod auto_groups;
 mod routing;
 mod view;
 
@@ -19,9 +20,10 @@ use crate::server::core::providers::{kind_from_id, kind_id, ProviderKind, PROVID
 use super::autoclaw::region::Region as AutoclawRegion;
 use super::workbuddy::Region as WorkBuddyRegion;
 
+pub use auto_groups::{auto_group_for, auto_group_list, is_auto_group_id, normalized_hits, AutoGroup};
 pub use routing::{
     default_model_catalog, default_model_usable, forwarding_providers, model_blocked_everywhere,
-    providers_for_model, wire_target_for_provider, WireTarget,
+    parse_scoped, providers_for_model, wire_target_for_provider, WireTarget,
 };
 pub use view::{
     advertised_manifest_contains, advertised_model_ids, has_available_providers, manage_view,

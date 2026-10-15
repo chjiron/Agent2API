@@ -342,6 +342,20 @@ const BRIDGE_JS: &str = r#"
     // 候选队列可见化（账号页「路由」面板的数据源）：model 缺省 = 不限模型的全局队列
     getRoutingQueue: model =>
       call('GET', '/api/routing/queue' + (model ? '?model=' + encodeURIComponent(model) : '')),
+    // ── 路由组（模型路由组：账号集合 × 模型模式 × 组级策略）──
+    // 每个写操作都返回全量视图（用户组 + 自动组 + 候选表），前端就地重绘；
+    // 自动组是清单的函数、候选表是运行期事实，前端维护第二份只会分叉
+    // （见后端 `api::routing_groups_api` 的模块头）。
+    getRoutingGroups: () => call('GET', '/api/routing-groups'),
+    createRoutingGroup: payload => call('POST', '/api/routing-groups', payload || {}),
+    // 自定义自动识别组：沿用自动组的 id 落一条可编辑的用户组（见后端
+    // `api::routing_groups_api::create_group_from_auto`）
+    createRoutingGroupFromAuto: payload => call('POST', '/api/routing-groups/from-auto', payload || {}),
+    // 覆盖预览（弹窗实时算「命中哪些模型、每个成员承接几个」；纯计算不落盘）
+    previewRoutingGroup: payload => call('POST', '/api/routing-groups/preview', payload || {}),
+    updateRoutingGroup: (id, patch) =>
+      call('PATCH', '/api/routing-groups/' + encodeURIComponent(id), patch || {}),
+    deleteRoutingGroup: id => call('DELETE', '/api/routing-groups/' + encodeURIComponent(id)),
     batchAccounts: payload =>
       call('POST', '/api/accounts/batch', {
         action: String((payload && payload.action) || ''),
