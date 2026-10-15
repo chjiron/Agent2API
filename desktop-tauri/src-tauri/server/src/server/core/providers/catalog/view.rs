@@ -104,6 +104,10 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
             }
         }
     }
+    // 自动组标识（`autoGroup`）的判据与路由解析（`routing_groups::resolve_for`）
+    // 同源：用户组先接（接住了就不是「自动」组）、否则看归一化键是否 ≥2 家。
+    // 每请求扫一遍用户组太浪费，这里整表只取一次。
+    let user_groups = crate::server::core::routing_groups::list();
     order
         .into_iter()
         .filter_map(|lower| {
@@ -121,9 +125,19 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
                 .first()
                 .map(|(provider, _)| provider.clone())
                 .unwrap_or_default();
-            if let Some(object) = item.as_object_mut() {
-                object.insert("providers".to_string(), Value::Array(ids));
-                object.insert("providerLabels".to_string(), Value::Array(labels));
+            let mut object = item.as_object_mut()?;
+            object.insert("providers".to_string(), Value::Array(ids));
+            object.insert("providerLabels".to_string(), Value::Array(labels));
+            // 展示名 = 第一家认领者的对外名（与上面归一化补集的取材同一份）
+            if let (Some(keyed), Some(display)) = (keyed.as_ref(), vendors.first().map(|(_, name)| name.clone())) {
+                let taken = user_groups.iter().any(|group| group.matches_model(&display));
+                let key = crate::server::core::models::merge_key(&display);
+                if !taken && keyed.by_key.get(&key).is_some_and(|v| v.len() >= 2) {
+                    object.insert(
+                        "autoGroup".to_string(),
+                        json!({ "id": super::auto_groups::group_id_for_key(&key), "key": key }),
+                    );
+                }
             }
             Some((owner, item))
         })
@@ -156,11 +170,24 @@ fn append_scoped_items(data: &mut Vec<Value>) {
             }
             let mut copy = item.clone();
             if let Some(object) = copy.as_object_mut() {
+                // `id` 保持 `平台/模型`（那是请求名，点名钉家靠它），但客户端
+                // 界面显示的是 `name` —— 平台标签必须写进 name，否则用户只看到
+                // 与聚合条目同名的一行，分不清这是哪一家（用户实测反馈）。
+                let label = super::super::label_of(provider);
+                let base = object
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&id)
+                    .to_string();
                 object.insert("id".to_string(), Value::String(scoped));
+                object.insert("name".to_string(), Value::String(format!("{label} · {base}")));
                 object.insert("owned_by".to_string(), Value::String(provider.to_string()));
                 object.insert("scoped".to_string(), Value::Bool(true));
                 object.remove("providers");
                 object.remove("providerLabels");
+                // 限定名钉死一家，自动组不参与这个名字的选路（resolve_for 对
+                // 限定名直接返回 None）—— 副本上不该残留聚合条目的组标识
+                object.remove("autoGroup");
             }
             additions.push(copy);
         }

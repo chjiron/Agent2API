@@ -170,11 +170,17 @@ fn build_group(key: String, variants: Vec<(String, String)>) -> AutoGroup {
         .map(|(_, model)| model.clone())
         .unwrap_or_else(|| key.clone());
     AutoGroup {
-        id: format!("auto-{}", slug(&key)),
+        id: group_id_for_key(&key),
         name,
         key,
         variants,
     }
+}
+
+/// 自动组 id（`auto-<归一化键的 slug>`）的唯一算式：路由解析、`/v1/models`
+/// 的 `autoGroup` 标识与界面列表都走这里 —— 两处各拼一遍迟早会算出两个 id。
+pub fn group_id_for_key(key: &str) -> String {
+    format!("auto-{}", slug(key))
 }
 
 /// 自动组 id 的形状判据（界面与排障用；用户组 id 恒不以 `auto-` 开头）。
