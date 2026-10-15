@@ -128,11 +128,13 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
             let mut object = item.as_object_mut()?;
             object.insert("providers".to_string(), Value::Array(ids));
             object.insert("providerLabels".to_string(), Value::Array(labels));
-            // 自动跨家组的标识走 **name 前缀**（`auto · 名字`），不加新字段：
+            // 自动跨家组的标识走 **name 前缀**（`Auto · 名字`），不加新字段：
             // /v1/models 是通用接口（所有智能体都在读），结构必须保持稳定；
             // 而客户端界面显示的就是 name —— 前缀既看得见又零成本兼容。
-            // id 不动（那是请求名）。判据与路由解析（resolve_for）同源：
-            // 用户组先接（接住了就不再标「自动」）、否则看归一化键是否 ≥2 家。
+            // 大小写统一按标题式（`Auto`，与后面模型展示名的首字母大写一致；
+            // 用户实测反馈小写 auto 混着大写名字难看）。id 不动（那是请求名）。
+            // 判据与路由解析（resolve_for）同源：用户组先接（接住了就不再
+            // 标「自动」）、否则看归一化键是否 ≥2 家。
             if let (Some(keyed), Some(display)) = (keyed.as_ref(), vendors.first().map(|(_, name)| name.clone())) {
                 let taken = user_groups.iter().any(|group| group.matches_model(&display));
                 let key = crate::server::core::models::merge_key(&display);
@@ -142,7 +144,7 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
                         .and_then(Value::as_str)
                         .map(str::to_string)
                         .unwrap_or(display);
-                    object.insert("name".to_string(), Value::String(format!("auto · {base}")));
+                    object.insert("name".to_string(), Value::String(format!("Auto · {base}")));
                 }
             }
             Some((owner, item))
@@ -186,8 +188,8 @@ fn append_scoped_items(data: &mut Vec<Value>) {
                     .unwrap_or(&id)
                     .to_string();
                 // 限定名钉死一家、不走自动跨家组 —— 聚合条目 name 上的
-                // `auto · ` 前缀在这里要去掉，不然会读成「WorkBuddy · auto · …」
-                let base = base.strip_prefix("auto · ").unwrap_or(&base).to_string();
+                // `Auto · ` 前缀在这里要去掉，不然会读成「WorkBuddy · Auto · …」
+                let base = base.strip_prefix("Auto · ").unwrap_or(&base).to_string();
                 object.insert("id".to_string(), Value::String(scoped));
                 object.insert("name".to_string(), Value::String(format!("{label} · {base}")));
                 object.insert("owned_by".to_string(), Value::String(provider.to_string()));
@@ -222,7 +224,35 @@ pub fn models_response(store: &AccountStore, scope: Option<&KeyScope>) -> Value 
     if crate::server::config::routing_settings().expose_scoped_models {
         append_scoped_items(&mut data);
     }
+    // 组优先：属于某个路由组（用户组接管，或自动跨家组）的条目排到列表最前 ——
+    // 客户端选模型时「有组兜底的」正是最该先看到的（某家限流会自动换别家）。
+    // 稳定分区：组内条目之间、普通条目之间都保持原有相对顺序（清单顺序）。
+    sort_group_first(&mut data);
     list_response_from(data, source, refreshed_at)
+}
+
+/// 稳定分区：命中任一用户组、或带 `Auto · ` 前缀（自动跨家组）的条目挪到前面。
+///
+/// 判据与 `resolve_for` 同源：用户组用 `matches_model`（模式或归一化键），
+/// 自动组直接看 name 前缀（`public_builtin_items` 刚按同一判据盖上去）。
+/// 限定名条目（`scoped`）跟着它所属聚合名的判断走 —— 这里按 id 剥前缀后判。
+fn sort_group_first(data: &mut Vec<Value>) {
+    let groups = crate::server::core::routing_groups::list();
+    let in_group = |item: &Value| -> bool {
+        let id = model_id(item);
+        if id.is_empty() {
+            return false;
+        }
+        let bare = super::parse_scoped(&id).map(|(_, bare)| bare.to_string()).unwrap_or(id);
+        if groups.iter().any(|group| group.matches_model(&bare)) {
+            return true;
+        }
+        item.get("name").and_then(Value::as_str)
+            .is_some_and(|name| name.starts_with("Auto · "))
+    };
+    // 稳定：partition_point 语义 —— 先收集两组再拼接，等价的 sort_by_key 保持
+    // 相对顺序（Rust 的 sort_by_key 是稳定的）
+    data.sort_by_key(|item| !in_group(item));
 }
 
 /// 一家可用提供商都没有时（没加账号），入口校验要跳过「广告里有才放行」与
