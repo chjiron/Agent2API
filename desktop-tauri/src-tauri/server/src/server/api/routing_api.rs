@@ -203,13 +203,14 @@ pub async fn get_routing_queue(
         None => accounts.clone(),
     };
     // ── 路由组（与转发选路同一解析）───────────────────────────────
-    // 用户组把候选收窄到成员并按**组内顺位**排序（与 `rotate::group_scope`
+    // 用户组把候选收窄到链路成员并按**组内顺位**排序（与 `rotate::group_scope`
     // 同一判据），自动组不动候选（它的作用在候选链扩池，上面
     // `route_for_forward` 的返回值里已经体现）；策略取组级覆盖合并后的有效
     // 设置 —— 面板画的顺序因此与转发实际会走的顺序始终一致（改造前两者共用
     // `plan_route`，本次把**输入**也拉齐了）。
     let group = model.as_deref().and_then(crate::server::core::routing_groups::resolve_for);
-    let (scoped, ranks) = crate::server::core::routing_groups::scope(group.as_ref(), scoped);
+    let (scoped, ranks) =
+        crate::server::core::routing_groups::scope(group.as_ref(), model.as_deref(), scoped);
     let now = crate::server::logging::now_ms();
     let counts: HashMap<String, usize> = state
         .upstream()
@@ -269,13 +270,13 @@ pub async fn get_routing_queue(
         "strategy": settings.strategy.as_str(),
         "sticky": settings.sticky.as_str(),
         // 命中的路由组（`null` = 全局队列）：面板据此显示「当前组」并解释
-        // 候选池为什么是这几个账号；用户组的成员顺序就是 `ordered` 的前后序，
-        // `variants` 是自动组各家的 (provider, 真名)
+        // 候选池为什么是这几个账号；用户组的链内成员顺序就是 `ordered` 的前后序，
+        // `memberCount` 是本模型实际出力那条链的成员数，`variants` 是自动组各家的 (provider, 真名)
         "group": group.as_ref().map(|group| json!({
             "id": group.id,
             "name": group.name,
             "auto": group.auto,
-            "memberCount": group.members.len(),
+            "memberCount": group.members_for(model.as_deref()).len(),
             "variants": group.variants.iter()
                 .map(|(provider, model)| json!([provider, model]))
                 .collect::<Vec<_>>(),

@@ -152,22 +152,20 @@ export type ClineHeadersData = {
  * refreshModelsDev），展示行文案由模型页自己组织。
  */
 
-/* ─── 路由组（设置页「路由组」分类，见 routing-groups.tsx）─── */
-
-/* ─── 路由组（设置页「账号路由」区的组管理块，见 routing-groups.tsx）─── */
+/* ─── 路由组（主导航「转发能力 → 路由组」页，见 routing-groups.tsx）─── */
 
 /**
- * 一条组成员（**顺序即组内顺位**：列表顺序就是这个组的队列顺序）。
+ * 一条组成员（**顺序即链内顺位**：列表顺序就是这条链的队列顺序）。
  *
  * `provider` = 全部账号（该平台的所有账号，含以后新增的；`accounts` 是
- * **组内优先顺序的覆盖** —— 界面拖拽维护，空 = 未点名、账号间按全局优先级）；
+ * **链内优先顺序的覆盖** —— 界面拖拽维护，空 = 未点名、账号间按全局优先级）；
  * `account` = 指定账号（精确到某一条记录）。`missing` = 后端标的失效
  * （平台未注册 / 指定账号已不存在），界面据此提示替换。
  */
 export type RoutingGroupMemberView = {
   type: 'provider' | 'account'
   id: string
-  /** 全部账号，该平台的组内优先顺序覆盖（界面拖拽维护；空 = 未点名） */
+  /** 全部账号，该平台的链内优先顺序覆盖（界面拖拽维护；空 = 未点名） */
   accounts?: string[]
   /** 全部账号：展示名；指定账号：账号备注名 */
   name?: string
@@ -176,6 +174,18 @@ export type RoutingGroupMemberView = {
   providerLabel?: string
   enabled?: boolean
   missing?: boolean
+}
+
+/**
+ * 一条模型链路：一个模型（归一化键 `key`）+ 承接它的各家（`providers`，有序）。
+ *
+ * 组的主体就是链路的有序列表 —— **拖一条链路行 = 拖路由优先级**（对齐 magpie
+ * 的组语义：勾一个自动组进来就是一整块，保留它自己的内部顺序）。`key` 为空是
+ * 兜底链（只经通配模式命中，旧组迁移来的形态，新界面不产生）。
+ */
+export type RoutingGroupChainView = {
+  key: string
+  providers: RoutingGroupMemberView[]
 }
 
 /** 组级策略覆盖：null = 继承全局（与后端 `RoutingGroupSettings` 的 Option 一一对应） */
@@ -191,8 +201,8 @@ export type RoutingGroupSettingsView = {
 }
 
 /**
- * 覆盖预览（后端 `coverage_json`）：这个组的匹配规则到底接住了什么、
- * 每个成员能承接几个、哪些成员/模式空转 —— 组编辑器最容易说不清的那层关系。
+ * 覆盖预览（后端 `coverage_json`）：这个组的链路到底接住了什么、
+ * 每个链成员能承接几个、哪些成员/模式空转 —— 组编辑器最容易说不清的那层关系。
  * 视图（列表卡片）里 `matched` 省略，只有计数与空转项；预览接口给明细（最多 50 条）。
  */
 export type RoutingGroupCoverage = {
@@ -202,11 +212,11 @@ export type RoutingGroupCoverage = {
     carriers: Array<{ id: string; label: string; member: boolean }>
   }>
   truncated?: boolean
-  /** 成员键（`provider:id` / `account:id`）→ 该成员能承接的命中模型数 */
+  /** 链成员键（`chain:<key>|provider:id`）→ 该成员能承接的命中模型数 */
   memberServes: Array<{ key: string; serves: number }>
   /** 目录里没有任何模型被它命中的模式（永远不会接住请求） */
   orphanPatterns: string[]
-  /** 承接数为 0 的成员键（一条请求也落不到它） */
+  /** 承接数为 0 的链成员键（一条请求也落不到它） */
   unservedMembers: string[]
 }
 
@@ -215,15 +225,12 @@ export type RoutingGroupView = {
   id: string
   name: string
   enabled: boolean
-  models: string[]
-  /**
-   * 同源键集合（**由「勾选模型」自动维护**）：请求名的归一化键落在集合里即命中
-   * —— 勾一个模型就覆盖各家拼写（大小写、版本点号、快照日期等差异）。
-   */
-  normalizedKeys: string[]
-  members: RoutingGroupMemberView[]
+  /** 通配模式（`*`，大小写不敏感）：命中且没有专属链时的兜底匹配 */
+  patterns: string[]
+  /** 模型链路（有序 = 列表顺序；链内 providers 顺序 = 链内顺位） */
+  chains: RoutingGroupChainView[]
   settings: RoutingGroupSettingsView
-  /** 启用 + 有成员 + （有模式或归一化键）（空组不承接任何请求） */
+  /** 启用 + 有链路 + （有链键或有模式）（空组不承接任何请求） */
   active: boolean
   /** 从自动识别组接管来的（沿用 auto- id；删除即回到自动识别） */
   fromAuto: boolean

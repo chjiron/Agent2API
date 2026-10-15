@@ -12,7 +12,7 @@ import {
 } from '@ui'
 import { errorMessage, shared, toast } from './accounts-shared'
 import { ModelPicker } from './routing-model-picker'
-import { ProviderAvatar } from './routing-avatar'
+import { ProviderAvatar, AvatarStack } from './routing-avatar'
 import { t } from '../i18n'
 import {
   ROUTE_STICKY_OPTIONS,
@@ -31,30 +31,26 @@ import {
 /**
  * 路由组页（主导航 → 转发能力 → 路由组；岛路由壳在 routing-page.tsx）。
  *
+ * ── 数据模型：一条链 = 一个模型 + 承接它的各家（对齐 magpie）────
+ * 组的主体是**有序链路列表**：勾一个模型（或整组）的瞬间，它成为一条链、
+ * 承载它的各家自动填进链内（顺序 = 链内顺位）；**拖一条链 = 拖路由优先级**，
+ * 展开链 = 各家可再拖顺序、可点名账号（组内账号精修是 magpie 没有、按用户
+ * 要求保留的能力）。不存在「选了组还要再配一遍成员」—— 成员就是链的内容，
+ * 由勾选动作自动维护。通配模式收在「高级」里（手写 `gpt-5*` 这类）。
+ *
  * ── 交互 ──────────────────────────────────────────────────
  *   · 列表与编辑在同一处：点「编辑」那张卡片就地展开成编辑器，保存 / 取消
  *     回到卡片；删除确认也在卡片里内联回答 —— 不再有打断式弹窗。
- *   · **模型与路由组在同一浮层里选**（`routing-model-picker.tsx`）：搜索置顶、
- *     左侧来源导航（带头像与「+ 加入全部账号」）、无查询按来源分组、有查询
- *     打分扁平；列表只列**真有这个模型的供应商**，没模型的家收在浮层底部
- *     小胶囊行。勾选模型自动维护同源键；自动识别组可整组勾选。
- *   · **勾模型的瞬间，承载它的各家自动成为成员**（magpie 的心智：组管
- *     「家 × 模型」层，账号池由各家自动展开，不需要再配一遍账号）；取消
- *     勾选只回收自动加的、用户动过的永不动。成员行仍可拖拽排序、展开
- *     点名账号（这是 magpie 没有、按用户要求保留的组内账号精修）。
- *   · **排序一律拖拽**（↑↓ 保留作备用）：成员行拖动 = 组内顺位；
- *     「全部账号」成员展开后的账号也能拖（顺序存在该成员的 `accounts` 上，
- *     没拖到的新账号排在后面，同层按账号页优先级）。
- *   · **反馈只有一种**：所有成功 / 失败统一走顶部 toast（与全站其它页一致），
- *     不再叠一条内联错误条 —— 旧版「toast + 底部红条」双提示是两套体系并存，
- *     已按用户要求收敛为一套。
- *   · 关系实时可见：编辑器标题行实时胶囊（命中几个模型 / 几个成员 / 谁接不到
- *     活）、成员行显示**承接几个模型**、来源显示**可用账号数**；数字全部由
+ *   · **模型与自动组在同一目录面板里选**（`routing-model-picker.tsx`）：
+ *     搜索置顶、左侧来源导航、无查询按来源分组、有查询打分扁平；面板 portal
+ *     到 body，父容器裁不到它。
+ *   · **排序一律拖拽**（↑↓ 保留作备用）：链行拖动 = 路由优先级；展开后
+ *     家行拖动 = 链内顺位；「全部账号」的家展开后账号也能拖（顺序存在该家
+ *     的 `accounts` 上，没拖到的新账号排在后面，同层按账号页优先级）。
+ *   · **反馈只有一种**：所有成功 / 失败统一走顶部 toast（与全站其它页一致）。
+ *   · 关系实时可见：编辑器标题行实时胶囊（命中几个模型 / 几条链 / 谁接不到
+ *     活）、家行显示**承接几个模型**、来源显示**可用账号数**；数字全部由
  *     后端 `POST /api/routing-groups/preview` 现算（前端不复制判据）。
- *
- * ── 成员顺序 = 组内顺位 ─────────────────────────────────────
- * 成员行的上下顺序就是这个组的队列顺序（顺序优先按它排、负载均衡按它轮）。
- * 成员两种形态：全部账号（该平台所有账号，含以后新增的）与指定账号。
  *
  * ── 对外契约 ──────────────────────────────────────────────
  * `window.wbRoutingPanel = { load }`：app.js 切页时调一次 —— 组 / 自动组 /
@@ -70,8 +66,10 @@ function providerIndexOf(options: RoutingGroupProviderOption[]): Map<string, Rou
 /** 「这个组现在为什么不会生效」的一句话（卡片上用） */
 function inactiveReason(group: RoutingGroupView): string {
   if (!group.enabled) return t('已停用：不参与选路')
-  if (group.members.length === 0) return t('不生效：还没有成员')
-  if (group.models.length === 0 && group.normalizedKeys.length === 0) return t('不生效：还没有模型匹配')
+  if (group.chains.length === 0) return t('不生效：还没有模型链路')
+  if (group.patterns.length === 0 && group.chains.every(chain => !chain.key)) {
+    return t('不生效：还没有模型匹配')
+  }
   return ''
 }
 
@@ -86,21 +84,6 @@ function settingsSummary(settings: RoutingGroupSettingsView): string {
   if (settings.sink === false) items.push(t('垫底：关'))
   if (settings.breakerEnabled === true) items.push(t('熔断：开'))
   return items.length > 0 ? items.join(' · ') : t('全部继承全局设置')
-}
-
-/** 成员行的展示名（头像旁边） */
-function memberText(member: RoutingGroupMemberView, index: number, providerIndex: Map<string, RoutingGroupProviderOption>): string {
-  if (member.type === 'provider') {
-    const label = member.label ?? member.id
-    const count = providerIndex.get(member.id)?.count
-    if (count === undefined) return `${index + 1}. ${label}`
-    return count === 0
-      ? `${index + 1}. ${t('{label}（没有可用账号）', { label })}`
-      : `${index + 1}. ${t('{label}（{count} 个可用账号）', { label, count: String(count) })}`
-  }
-  const provider = member.providerLabel ?? member.provider ?? ''
-  const name = member.name ?? member.id
-  return `${index + 1}. ${provider ? `${provider} · ${name}` : name}`
 }
 
 /** 主面板：整块内联（列表 ⇄ 就地编辑），不含任何弹窗 */
@@ -212,7 +195,7 @@ export function RoutingGroupsPanel() {
     <section className='panel'>
       <div className='panel-head'>
         <h2>{t('路由组')}</h2>
-        <span className='tip-q' data-tip={t('路由组把「请求先落到哪几个账号」变成可配置的：选几个平台（或指定账号）当成员，再勾选它承接的模型。成员顺序就是组内队列顺序；勾选模型会自动覆盖各家的同源拼写。')}></span>
+        <span className='tip-q' data-tip={t('路由组把「某个模型先落到哪些账号」变成可配置的：一条链路 = 一个模型 + 承接它的各家（自动带入、可拖顺序）。拖动链路行 = 调路由优先级；勾选自动组 = 整块接住各家同名模型。')}></span>
         <div className='head-actions'>
           <Button id='btn-routing-group-refresh' variant='outline' size='sm' disabled={busy}
             onClick={() => void load()}>{t('刷新')}</Button>
@@ -262,7 +245,7 @@ export function RoutingGroupsPanel() {
               <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.6' strokeLinecap='round'>
                 <circle cx='5' cy='12' r='2' /><path d='M7.5 12H12' /><path d='M12 12c2.5 0 2.5-5 5-5h3' /><path d='M12 12c2.5 0 2.5 5 5 5h3' />
               </svg>
-              {t('还没有路由组。点「新建组」：勾选要承接的模型（或自动组），提供它们的各家会自动成为成员。')}
+              {t('还没有路由组。点「新建组」：勾选要承接的模型（或自动组），承载它的各家会自动成为链内成员。')}
             </div>
           ) : null}
 
@@ -319,7 +302,7 @@ export function RoutingGroupsPanel() {
                     <Button variant='ghost' size='xs' disabled={disabled || Boolean(group.coveredBy) || editing !== null}
                       title={group.coveredBy
                         ? t('这条自动组已被同名组接管')
-                        : t('沿用这个自动组的成员与匹配，进入编辑器')}
+                        : t('沿用这个自动组的链路与各家顺序，进入编辑器')}
                       onClick={() => setEditing({ group: null, auto: group })}>{t('接管')}</Button>
                   </div>
                 )
@@ -385,6 +368,7 @@ function GroupCard({
   const unserved = group.coverage.unservedMembers.length
   const orphans = group.coverage.orphanPatterns.length
   const reason = inactiveReason(group)
+  const chainCount = group.chains.reduce((sum, chain) => sum + chain.providers.length, 0)
   return (
     <div className={`rg-card${group.enabled && !reason ? ' is-active' : ''}`}>
       <div className='rg-card-head'>
@@ -398,7 +382,7 @@ function GroupCard({
         <strong className='rg-name'>{group.name}</strong>
         {group.fromAuto ? <span className='rg-tag'>{t('来自自动组')}</span> : null}
         <span className='rg-meta'>
-          {t('命中 {count} 个模型 · {members} 个成员', { count: group.coverage.matchedCount, members: group.members.length })}
+          {t('命中 {count} 个模型 · {chains} 条链路', { count: group.coverage.matchedCount, chains: group.chains.length })}
           {unserved > 0 ? t(' · {count} 个成员接不到活', { count: unserved }) : ''}
           {orphans > 0 ? t(' · {count} 个模式落空', { count: orphans }) : ''}
         </span>
@@ -422,38 +406,36 @@ function GroupCard({
 
       <div className='rg-body'>
         <div className='rg-line'>
-          <span className='rg-line-label'>{t('模型')}</span>
+          <span className='rg-line-label'>{t('链路')}</span>
           <span className='rg-chips'>
-            {group.models.length === 0 && group.normalizedKeys.length === 0
-              ? <span className='hint'>{t('（未填匹配）')}</span>
-              : group.models.map(pattern => <span key={pattern} className='rg-chip'><span>{pattern}</span></span>)}
+            {group.chains.length === 0
+              ? <span className='hint'>{t('（还没有链路）')}</span>
+              : group.chains.map(chain => (
+                <span key={chain.key || '(patterns)'} className='rg-member-pill'
+                  title={chain.key || t('通配模式兜底链')}>
+                  <span>{chain.key || t('模式兜底')}</span>
+                  <AvatarStack items={chain.providers.map(member => ({
+                    provider: member.type === 'provider' ? member.id : member.provider ?? '',
+                    label: member.type === 'provider' ? member.label : member.providerLabel,
+                  }))} size={16} />
+                </span>
+              ))}
           </span>
         </div>
-        <div className='rg-line'>
-          <span className='rg-line-label'>{t('成员')}</span>
-          <span className='rg-chips'>
-            {group.members.length === 0
-              ? <span className='hint'>{t('（没有成员）')}</span>
-              : group.members.map((member, index) => {
-                const display = memberText(member, index, providerIndex)
-                return (
-                  <span key={`${member.type}-${member.id}`}
-                    className={`rg-member-pill${member.missing ? ' is-missing' : ''}`}
-                    title={member.missing ? t('这条成员已失效，请编辑把它换掉') : display}>
-                    <ProviderAvatar
-                      provider={member.type === 'provider' ? member.id : member.provider ?? ''}
-                      label={member.type === 'provider' ? member.label : member.providerLabel ?? member.name ?? member.id}
-                      size={16} />
-                    <span>{display}</span>
-                  </span>
-                )
-              })}
-          </span>
-        </div>
+        {group.patterns.length > 0 ? (
+          <div className='rg-line'>
+            <span className='rg-line-label'>{t('模式')}</span>
+            <span className='rg-chips'>
+              {group.patterns.map(pattern => <span key={pattern} className='rg-chip is-extra'><span>{pattern}</span></span>)}
+            </span>
+          </div>
+        ) : null}
       </div>
 
       <div className='rg-foot'>
         <span>{t('策略')}: {settingsSummary(group.settings)}</span>
+        <span className='spacer' style={{ flex: 1 }} />
+        <span>{t('{count} 个成员', { count: chainCount })}</span>
       </div>
     </div>
   )
@@ -472,8 +454,11 @@ type SettingsDraft = {
   breakerSuccessThreshold: string
 }
 
-/** 成员草稿：`accounts` 只对「全部账号」成员有意义（组内优先顺序覆盖） */
+/** 成员草稿：`accounts` 只对「全部账号」成员有意义（链内优先顺序覆盖） */
 type MemberDraft = { type: 'provider' | 'account'; id: string; accounts?: string[] }
+
+/** 链路草稿：key = 归一化键（寻址单位），label = 展示名，providers = 各家（有序） */
+type ChainDraft = { key: string; label: string; providers: MemberDraft[] }
 
 const memberKeyOf = (member: MemberDraft) => `${member.type}:${member.id}`
 
@@ -497,6 +482,22 @@ function reorder<T>(list: T[], from: number, insertAt: number): T[] {
   if (target === from) return list
   const next = [...list]
   const [item] = next.splice(from, 1)
+  next.splice(target, 0, item)
+  return next
+}
+
+/**
+ * 相邻移动（↑↓ 按钮用）：`delta` = ±1。
+ *
+ * 不能直接复用 [`reorder`] 传 `index + delta` —— 它内部对「下移」会先把目标
+ * 减一（那是给拖拽的「插入下标」语义准备的），`index+1` 于是变回 `index`，
+ * 下移一格成了空操作。这里显式按「先摘出再插到 index+delta」做，上下都对。
+ */
+function moveBy<T>(list: T[], index: number, delta: number): T[] {
+  const target = index + delta
+  if (index < 0 || index >= list.length || target < 0 || target >= list.length) return list
+  const next = [...list]
+  const [item] = next.splice(index, 1)
   next.splice(target, 0, item)
   return next
 }
@@ -560,7 +561,7 @@ function GroupEditor({
   onSaved,
 }: {
   group: RoutingGroupView | null
-  /** 非空 = 编辑自动识别组（保存后成为可编辑的组，沿用它的 id 与同源键） */
+  /** 非空 = 编辑自动识别组（保存后成为可编辑的组，沿用它的 id 与键） */
   customize: RoutingAutoGroupView | null
   payload: RoutingGroupsPayload | null
   onCancel: () => void
@@ -568,102 +569,80 @@ function GroupEditor({
 }) {
   const bridge = shared().workbuddyDesktop
   const catalogModels: RoutingGroupModelOption[] = React.useMemo(() => payload?.models ?? [], [payload])
-  const modelIndex = React.useMemo(() => {
-    const index = new Map<string, RoutingGroupModelOption>()
-    for (const model of catalogModels) index.set(model.id.toLowerCase(), model)
-    return index
-  }, [catalogModels])
   const accountOptions: RoutingGroupAccountOption[] = payload?.accounts ?? []
   const providerOptions: RoutingGroupProviderOption[] = payload?.providers ?? []
   const providerIndex = React.useMemo(() => providerIndexOf(providerOptions), [providerOptions])
-
-  const customizeInitial = React.useMemo(() => {
-    if (!customize) return { patterns: [] as string[], providers: [] as string[] }
-    const patterns: string[] = []
-    const providers: string[] = []
-    for (const variant of customize.variants) {
-      if (!patterns.some(known => known.toLowerCase() === variant.model.toLowerCase())) {
-        patterns.push(variant.model)
-      }
-      if (!providers.includes(variant.provider)) providers.push(variant.provider)
+  /** mergeKey → 目录模型（勾选时取承载家清单） */
+  const modelByKey = React.useMemo(() => {
+    const index = new Map<string, RoutingGroupModelOption>()
+    for (const model of catalogModels) {
+      if (model.mergeKey && !index.has(model.mergeKey)) index.set(model.mergeKey, model)
     }
-    return { patterns, providers }
-  }, [customize])
+    return index
+  }, [catalogModels])
 
-  const [patterns, setPatterns] = React.useState<string[]>(group?.models ?? customizeInitial.patterns)
-  const [name, setName] = React.useState(group?.name ?? customize?.name ?? '')
-  const [members, setMembers] = React.useState<MemberDraft[]>(() => {
+  // ── 草稿初值 ──
+  const initialChains = React.useMemo<ChainDraft[]>(() => {
     if (group) {
-      return group.members.map(member => ({
-        type: member.type,
-        id: member.id,
-        accounts: member.type === 'provider' ? [...(member.accounts ?? [])] : undefined,
+      return group.chains.map(chain => ({
+        key: chain.key,
+        label: modelByKey.get(chain.key)?.id ?? (chain.key || t('模式兜底')),
+        providers: chain.providers.map(member => ({
+          type: member.type,
+          id: member.id,
+          accounts: member.type === 'provider' ? [...(member.accounts ?? [])] : undefined,
+        })),
       }))
     }
-    return customizeInitial.providers.map(provider => ({ type: 'provider' as const, id: provider, accounts: [] }))
-  })
-  /**
-   * 服务端带来的、无法由「勾选模型」推导的同源键（如自动组自己的键）：
-   * 原样保留到用户删掉对应来源为止 —— 勾选式交互不覆盖它们，避免静默丢匹配。
-   */
-  const [legacyKeys] = React.useState<string[]>(() => {
-    const initial = group?.normalizedKeys ?? (customize ? [customize.key] : [])
-    return initial.filter(key => !catalogModels.some(model => model.mergeKey === key))
-  })
+    if (customize) {
+      // 接管自动组：一条链，providers = 各家按自动组顺序（同名拼写只留一家）
+      const providers: MemberDraft[] = []
+      for (const variant of customize.variants) {
+        if (!providers.some(member => member.type === 'provider' && member.id === variant.provider)) {
+          providers.push({ type: 'provider', id: variant.provider, accounts: [] })
+        }
+      }
+      return [{ key: customize.key, label: customize.name, providers }]
+    }
+    return []
+  }, [group, customize, modelByKey])
+
+  const [chains, setChains] = React.useState<ChainDraft[]>(initialChains)
+  const [patterns, setPatterns] = React.useState<string[]>(group?.patterns ?? [])
+  const [name, setName] = React.useState(group?.name ?? customize?.name ?? '')
   const [draft, setDraft] = React.useState<SettingsDraft>(() => draftFrom(group?.settings))
   const [preview, setPreview] = React.useState<RoutingGroupCoverage | null>(null)
   const [extraInput, setExtraInput] = React.useState('')
-  const [expandedProvider, setExpandedProvider] = React.useState<string | null>(null)
+  /** 展开的链（链内家列表可见） */
+  const [expandedChain, setExpandedChain] = React.useState<number | null>(null)
+  /** 展开的「链内某家的账号范围」 */
+  const [expandedScope, setExpandedScope] = React.useState<{ chain: number; provider: string } | null>(null)
   const [advancedOpen, setAdvancedOpen] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
-  /** 成员行的拖拽标记（拖动排序；↑↓ 按钮保留作备用） */
-  const [memberDrag, setMemberDrag] = React.useState<DragMark | null>(null)
-  /** 账号范围里的拖拽标记（只对「全部账号」成员有效） */
-  const [scopeDrag, setScopeDrag] = React.useState<(DragMark & { provider: string }) | null>(null)
-  /**
-   * 拖拽的**真值放 ref、state 只画指示线**：dragstart → dragover → drop 可能
-   * 挤在同一帧里（真实拖拽也可能很快），那时 state 还没重渲染、闭包读到的仍是
-   * 旧值，落点就会丢（拖了没反应）。ref 是同步的，不受渲染时机影响。
-   */
-  const memberDragRef = React.useRef<DragMark | null>(null)
-  const scopeDragRef = React.useRef<(DragMark & { provider: string }) | null>(null)
-
-  // ── 勾选的模型 → 同源键集合（用户不必理解归一化：勾了就覆盖各家拼写）──
-  const checkedModels = React.useMemo(
-    () => patterns.filter(pattern => modelIndex.has(pattern.trim().toLowerCase())),
-    [patterns, modelIndex],
-  )
-  const derivedKeys = React.useMemo(() => {
-    const keys: string[] = []
-    for (const id of checkedModels) {
-      const key = modelIndex.get(id.trim().toLowerCase())?.mergeKey
-      if (key && !keys.includes(key)) keys.push(key)
-    }
-    return keys
-  }, [checkedModels, modelIndex])
-  const effectiveKeys = React.useMemo(
-    () => [...new Set([...derivedKeys, ...legacyKeys])],
-    [derivedKeys, legacyKeys],
-  )
-  /** 目录里没有对应条目的模式：手写的「额外模式」（* 通配等） */
-  const extraPatterns = React.useMemo(
-    () => patterns.filter(pattern => !modelIndex.has(pattern.trim().toLowerCase())),
-    [patterns, modelIndex],
-  )
+  /** 链行 / 家行 / 账号范围行的拖拽标记（真值放 ref，state 只画指示线） */
+  const [chainDrag, setChainDrag] = React.useState<DragMark | null>(null)
+  const chainDragRef = React.useRef<DragMark | null>(null)
+  const [providerDrag, setProviderDrag] = React.useState<(DragMark & { chain: number }) | null>(null)
+  const providerDragRef = React.useRef<(DragMark & { chain: number }) | null>(null)
+  const [scopeDrag, setScopeDrag] = React.useState<(DragMark & { chain: number; provider: string }) | null>(null)
+  const scopeDragRef = React.useRef<(DragMark & { chain: number; provider: string }) | null>(null)
 
   // ── 实时覆盖预览（防抖 250ms）──
-  const membersKey = members.map(member => `${memberKeyOf(member)}:${(member.accounts ?? []).join(',')}`).join('|')
+  const chainsKey = JSON.stringify(chains.map(chain => [chain.key, chain.providers]))
   const patternsKey = patterns.join('\u0000')
-  const keysKey = effectiveKeys.join('|')
   React.useEffect(() => {
     if (!bridge?.previewRoutingGroup) return
     let alive = true
     const timer = setTimeout(async () => {
       try {
         const result = await bridge.previewRoutingGroup!({
-          models: patterns,
-          normalizedKeys: effectiveKeys,
-          members,
+          patterns,
+          chains: chains.map(chain => ({
+            key: chain.key,
+            providers: chain.providers.map(member => member.type === 'provider'
+              ? { type: 'provider', id: member.id, accounts: member.accounts ?? [] }
+              : { type: 'account', id: member.id }),
+          })),
         })
         if (alive) setPreview(result ?? null)
       } catch {
@@ -671,215 +650,159 @@ function GroupEditor({
       }
     }, 250)
     return () => { alive = false; clearTimeout(timer) }
-  }, [bridge, patternsKey, keysKey, membersKey])
+  }, [bridge, chainsKey, patternsKey])
 
+  /** 链成员在 preview 里的稳定键（与后端 chain_member_key 同式） */
+  const chainMemberKey = (chainIndex: number, member: MemberDraft) => {
+    const key = chains[chainIndex]?.key ?? ''
+    return `chain:${key}|${memberKeyOf(member)}`
+  }
   const servesOf = React.useCallback(
-    (member: MemberDraft): number | null => {
-      const entry = preview?.memberServes.find(item => item.key === memberKeyOf(member))
+    (chainIndex: number, member: MemberDraft): number | null => {
+      const entry = preview?.memberServes.find(item => item.key === chainMemberKey(chainIndex, member))
       return entry ? entry.serves : null
     },
-    [preview],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [preview, chains],
   )
 
-  // ── 平台 / 账号范围 ──
-  const accountsOfProvider = React.useCallback(
-    (provider: string) => accountOptions.filter(account => (account.provider ?? '') === provider),
-    [accountOptions],
-  )
-  const providerOfAccount = React.useCallback(
-    (id: string) => accountOptions.find(account => account.id === id)?.provider ?? '',
-    [accountOptions],
-  )
-  const platformState = (provider: string) => ({
-    whole: members.some(member => member.type === 'provider' && member.id === provider),
-    accounts: members
-      .filter(member => member.type === 'account' && providerOfAccount(member.id) === provider)
-      .map(member => member.id),
-  })
-  const wholeMemberOf = (provider: string) =>
-    members.find(member => member.type === 'provider' && member.id === provider)
-  /**
-   * 用户**手动意图**的家（点 + 加入、动过账号范围/顺序）：勾选模型的自动
-   * 回收永远跳过它们 —— 计数只解释「自动来的」那部分，手动加的家哪怕被
-   * 某个模型同时承载，取消那个模型也不该把它带走。
-   */
-  const manualProvidersRef = React.useRef<Set<string>>(new Set())
-  /** 整体替换某平台的成员（保持它原来的位置）：`all` = 全部账号 */
-  const applyPlatform = (provider: string, mode: 'all' | string[]) => {
-    if (mode === 'all' || mode.length > 0) manualProvidersRef.current.add(provider)
-    else manualProvidersRef.current.delete(provider)
-    setMembers(prev => {
-      const index = prev.findIndex(member =>
-        (member.type === 'provider' && member.id === provider)
-        || (member.type === 'account' && providerOfAccount(member.id) === provider))
-      const previousOrder = prev.find(member => member.type === 'provider' && member.id === provider)?.accounts
-      const others = prev.filter(member =>
-        !(member.type === 'provider' && member.id === provider)
-        && !(member.type === 'account' && providerOfAccount(member.id) === provider))
-      const insertAt = index >= 0 ? Math.min(index, others.length) : others.length
-      const next = [...others]
-      if (mode === 'all') next.splice(insertAt, 0, { type: 'provider', id: provider, accounts: previousOrder ?? [] })
-      else next.splice(insertAt, 0, ...mode.map(id => ({ type: 'account' as const, id })))
-      return next
+  // ── 勾选模型 / 自动组 = 增删一条链 ──
+  const selectedKeys = React.useMemo(() => chains.map(chain => chain.key).filter(Boolean), [chains])
+  const toggleModel = (model: RoutingGroupModelOption) => {
+    const key = model.mergeKey ?? ''
+    if (!key) return
+    setChains(prev => {
+      const index = prev.findIndex(chain => chain.key === key)
+      if (index >= 0) return prev.filter((_, at) => at !== index)
+      const providers: MemberDraft[] = (model.providers ?? []).map(provider => ({
+        type: 'provider' as const, id: provider, accounts: [],
+      }))
+      if (providers.length === 0) return prev
+      return [...prev, { key, label: model.id, providers }]
     })
   }
-  const togglePlatformWhole = (provider: string) => {
-    const state = platformState(provider)
-    applyPlatform(provider, state.whole ? [] : 'all')
-  }
-  /** 平台内单个账号的勾选：全选自动回到「全部账号」，空选 = 移出该平台 */
-  const togglePlatformAccount = (provider: string, accountId: string) => {
-    const allIds = accountsOfProvider(provider).map(account => account.id)
-    const state = platformState(provider)
-    const current = state.whole ? allIds : state.accounts
-    const next = current.includes(accountId)
-      ? current.filter(id => id !== accountId)
-      : [...current, accountId]
-    if (next.length === 0) applyPlatform(provider, [])
-    else if (next.length >= allIds.length) applyPlatform(provider, 'all')
-    else applyPlatform(provider, next)
-  }
-  const moveMember = (index: number, delta: number) => {
-    setMembers(prev => {
-      const target = index + delta
-      if (target < 0 || target >= prev.length) return prev
-      const next = [...prev]
-      const [item] = next.splice(index, 1)
-      next.splice(target, 0, item)
-      return next
-    })
-  }
-  const removeMember = (member: MemberDraft) => {
-    if (member.type === 'provider') applyPlatform(member.id, [])
-    else setMembers(prev => prev.filter(item => memberKeyOf(item) !== memberKeyOf(member)))
-  }
-
-  // ── 账号范围里的顺序（「全部账号」成员：拖拽 = 写 `accounts` 顺序覆盖）──
-  const orderedScopeAccounts = React.useCallback(
-    (provider: string): RoutingGroupAccountOption[] => {
-      const all = accountsOfProvider(provider)
-      const order = (wholeMemberOf(provider)?.accounts ?? []).filter(id =>
-        all.some(account => account.id === id))
-      const head = order.map(id => all.find(account => account.id === id)).filter(Boolean) as RoutingGroupAccountOption[]
-      return [...head, ...all.filter(account => !order.includes(account.id))]
-    },
-    // wholeMemberOf 读 members，一并进依赖
-    [accountsOfProvider, members],
-  )
-  const moveScopeAccount = (provider: string, from: number, insertAt: number) => {
-    const ids = orderedScopeAccounts(provider).map(account => account.id)
-    const next = reorder(ids, from, insertAt)
-    if (next === ids) return
-    setMembers(prev => prev.map(member =>
-      member.type === 'provider' && member.id === provider ? { ...member, accounts: next } : member))
-  }
-
-  // ── 模型勾选 → 成员链路自动到位 ─────────────────────────────
-  // magpie 的心智：组管「家 × 模型」这一层，账号池由各家**自动展开** ——
-  // 所以勾一个模型（或整组）的瞬间，提供它的各家就该自动成为成员，用户
-  // 不需要再配一遍账号。取消勾选时只回收「自动加的、且已不再被任何已选
-  // 模型需要、且用户没动过账号范围」的成员；手动加的永不动。
-  //
-  // 引用计数：一个家可能被多个已选模型同时需要（`autoAdded` = provider →
-  // 还差几个来源在用它）。取消一个模型只减计数，归零才真的移出成员。
-  // 初值：接管自动组时它的各家本就是「自动来的」，各计 1。
-  const autoAddedRef = React.useRef<Map<string, number>>(
-    new Map(customizeInitial.providers.map(provider => [provider, 1])),
-  )
-  const carriersOf = (id: string): string[] =>
-    modelIndex.get(id.trim().toLowerCase())?.providers ?? []
-  /** 勾选/取消一批模型时同步成员（`providers` = 这批涉及的家；调用方给准，不按 id 反查） */
-  const syncMembers = (next: string[], providers: string[], adding: boolean) => {
-    setPatterns(next)
-    const counts = autoAddedRef.current
-    const addMembers: string[] = []
-    const removeMembers: string[] = []
-    for (const provider of providers) {
-      const known = members.some(member =>
-        member.type === 'provider' ? member.id === provider : providerOfAccount(member.id) === provider)
-      if (adding) {
-        // 计数代表「多少个自动来源需要这家」：已在成员里（别的模型先加的）也要 +1，
-        // 否则取消先加的那个模型时会把后来者还需要的家误删；只是不重复进 addMembers
-        counts.set(provider, (counts.get(provider) ?? 0) + 1)
-        if (!known) addMembers.push(provider)
-      } else {
-        if (manualProvidersRef.current.has(provider)) continue // 手动意图的家 → 永不动
-        const had = counts.get(provider) ?? 0
-        if (had === 0) continue // 不是自动加的（手动 + 进来的）→ 永不动
-        if (had > 1) {
-          counts.set(provider, had - 1)
-          continue // 还有别的已选模型需要它 → 留
-        }
-        counts.delete(provider)
-        // 用户在这家上点名过账号范围 → 那是手动意图，自动空壳才回收
-        if (members.some(member =>
-          member.type === 'provider' && member.id === provider && (member.accounts ?? []).length > 0)) {
-          continue
-        }
-        removeMembers.push(provider)
-      }
-    }
-    if (addMembers.length === 0 && removeMembers.length === 0) return
-    setMembers(prev => {
-      let list = prev
-      if (removeMembers.length > 0) {
-        list = list.filter(member => !(member.type === 'provider' && removeMembers.includes(member.id)))
-      }
-      const additions = addMembers
-        .filter(provider => !list.some(member => member.type === 'provider' && member.id === provider))
-        .map(provider => ({ type: 'provider' as const, id: provider, accounts: [] }))
-      return additions.length > 0 ? [...list, ...additions] : list
-    })
-  }
-
-  // ── 模型勾选：直接增删模式（同源键随之自动更新，成员链路同步到位）──
-  const hasExact = (id: string) =>
-    patterns.some(pattern => pattern.toLowerCase() === id.trim().toLowerCase())
-  const toggleModel = (id: string) => {
-    const checked = hasExact(id)
-    const trimmed = id.trim()
-    const next = checked
-      ? patterns.filter(pattern => pattern.toLowerCase() !== trimmed.toLowerCase())
-      : [...patterns, trimmed]
-    syncMembers(next, carriersOf(trimmed), !checked)
-  }
-  /** 整组勾选：组的全部变体都已选 → 全部移出；否则把缺的变体补进来（成员同步） */
   const toggleGroup = (groupView: RoutingAutoGroupView) => {
-    // 同一组里多家可能用**一模一样的拼写**（各家真名重合）：按小写去重，
-    // 否则一次勾选会把同一个名字塞进模式列表好几遍（chips 出现重复行）
-    const ids: string[] = []
-    for (const variant of groupView.variants) {
-      if (!ids.some(id => id.toLowerCase() === variant.model.toLowerCase())) {
-        ids.push(variant.model)
+    setChains(prev => {
+      const index = prev.findIndex(chain => chain.key === groupView.key)
+      if (index >= 0) return prev.filter((_, at) => at !== index)
+      const providers: MemberDraft[] = []
+      for (const variant of groupView.variants) {
+        if (!providers.some(member => member.type === 'provider' && member.id === variant.provider)) {
+          providers.push({ type: 'provider', id: variant.provider, accounts: [] })
+        }
       }
-    }
-    // 成员同步用**组自己的各家**（变体的 provider 字段），不按模型名反查目录 ——
-    // 各家真名拼写可能与目录聚合 id 不同，反查会漏
-    const providers = [...new Set(groupView.variants.map(variant => variant.provider))]
-    const pickedAll = ids.every(id => patterns.some(pattern => pattern.toLowerCase() === id.toLowerCase()))
-    if (pickedAll) {
-      syncMembers(
-        patterns.filter(pattern => !ids.some(id => pattern.toLowerCase() === id.toLowerCase())),
-        providers, false,
-      )
-    } else {
-      const added = ids.filter(id => !patterns.some(pattern => pattern.toLowerCase() === id.toLowerCase()))
-      syncMembers([...patterns, ...added], providers, true)
-    }
+      return [...prev, { key: groupView.key, label: groupView.name, providers }]
+    })
   }
   /** 同源命中（后端 preview 现算）的模型 id 集合，供选择器行标「同源命中」 */
   const matchedModelIds = React.useMemo(
     () => new Set((preview?.matched ?? []).map(item => item.id.toLowerCase())),
     [preview],
   )
-  const addExtraPattern = () => {
-    const text = extraInput.trim()
-    if (!text) return
-    if (!hasExact(text)) setPatterns(prev => [...prev, text])
-    setExtraInput('')
+
+  // ── 链的增删改拖 ──
+  const removeChain = (index: number) => {
+    setChains(prev => prev.filter((_, at) => at !== index))
+    if (expandedChain === index) setExpandedChain(null)
+  }
+  const moveChain = (index: number, delta: number) => {
+    setChains(prev => moveBy(prev, index, delta))
+  }
+  const updateChainProviders = (index: number, next: (providers: MemberDraft[]) => MemberDraft[]) => {
+    setChains(prev => prev.map((chain, at) => at === index ? { ...chain, providers: next(chain.providers) } : chain))
+  }
+  const removeProvider = (chainIndex: number, member: MemberDraft) => {
+    updateChainProviders(chainIndex, providers => providers.filter(item => memberKeyOf(item) !== memberKeyOf(member)))
+  }
+  const moveProvider = (chainIndex: number, index: number, delta: number) => {
+    updateChainProviders(chainIndex, providers => moveBy(providers, index, delta))
+  }
+  /** 链内补家：目录里承载这个模型、但还没进链的家 */
+  const addableProvidersOf = (chain: ChainDraft): RoutingGroupProviderOption[] => {
+    const carriers = modelByKey.get(chain.key)?.providers ?? []
+    const known = new Set(chain.providers.filter(member => member.type === 'provider').map(member => member.id))
+    return carriers
+      .filter(provider => !known.has(provider))
+      .map(provider => providerIndex.get(provider) ?? { id: provider })
+  }
+  const addProviderToChain = (chainIndex: number, provider: string) => {
+    updateChainProviders(chainIndex, providers => {
+      if (providers.some(member => member.type === 'provider' && member.id === provider)) return providers
+      return [...providers, { type: 'provider', id: provider, accounts: [] }]
+    })
   }
 
-  const memberDisplay = (member: MemberDraft): string => {
+  // ── 链内某家的账号范围（全部账号 ↔ 点名账号）──
+  const accountsOfProvider = React.useCallback(
+    (provider: string) => accountOptions.filter(account => (account.provider ?? '') === provider),
+    [accountOptions],
+  )
+  const providerState = (chain: ChainDraft, provider: string) => {
+    const whole = chain.providers.some(member => member.type === 'provider' && member.id === provider)
+    const named = chain.providers
+      .filter(member => member.type === 'account'
+        && (accountOptions.find(account => account.id === member.id)?.provider ?? '') === provider)
+      .map(member => member.id)
+    return { whole, named }
+  }
+  const toggleWholeProvider = (chainIndex: number, provider: string) => {
+    updateChainProviders(chainIndex, providers => {
+      const whole = providers.some(member => member.type === 'provider' && member.id === provider)
+      const named = providers.filter(member => member.type === 'account').map(member => member.id)
+      if (whole) {
+        return providers.filter(member => !(member.type === 'provider' && member.id === provider))
+      }
+      // 切到全部账号：点名的账号成员收编（全部账号已覆盖它们，accounts 顺序保留）
+      const order = providers.find(member => member.type === 'provider' && member.id === provider)?.accounts ?? named
+      const rest = providers.filter(member =>
+        !(member.type === 'provider' && member.id === provider) && member.type !== 'account')
+      return [...rest, { type: 'provider' as const, id: provider, accounts: order }]
+    })
+  }
+  const toggleNamedAccount = (chainIndex: number, provider: string, accountId: string) => {
+    updateChainProviders(chainIndex, providers => {
+      const whole = providers.some(member => member.type === 'provider' && member.id === provider)
+      const allIds = accountsOfProvider(provider).map(account => account.id)
+      const current = whole ? allIds : providers
+        .filter(member => member.type === 'account')
+        .map(member => member.id)
+      const next = current.includes(accountId)
+        ? current.filter(id => id !== accountId)
+        : [...current, accountId]
+      if (whole) {
+        // 从「全部账号」里点掉一个 → 转成点名其余的
+        const kept = allIds.filter(id => id !== accountId)
+        const rest = providers.filter(member => !(member.type === 'provider' && member.id === provider))
+        return [...rest, ...kept.map(id => ({ type: 'account' as const, id }))]
+      }
+      if (next.length >= allIds.length && allIds.length > 0) {
+        const rest = providers.filter(member => member.type !== 'account')
+        return [...rest, { type: 'provider' as const, id: provider, accounts: next }]
+      }
+      const rest = providers.filter(member =>
+        !(member.type === 'provider' && member.id === provider) && member.type !== 'account')
+      return [...rest, ...next.map(id => ({ type: 'account' as const, id }))]
+    })
+  }
+  /** 「全部账号」家的链内账号顺序（拖拽写 accounts 覆盖表） */
+  const orderedScopeAccounts = (chain: ChainDraft, provider: string): RoutingGroupAccountOption[] => {
+    const all = accountsOfProvider(provider)
+    const order = (chain.providers.find(member => member.type === 'provider' && member.id === provider)?.accounts ?? [])
+      .filter(id => all.some(account => account.id === id))
+    const head = order.map(id => all.find(account => account.id === id)).filter(Boolean) as RoutingGroupAccountOption[]
+    return [...head, ...all.filter(account => !order.includes(account.id))]
+  }
+  const moveScopeAccount = (chainIndex: number, provider: string, from: number, insertAt: number) => {
+    const chain = chains[chainIndex]
+    if (!chain) return
+    const ids = orderedScopeAccounts(chain, provider).map(account => account.id)
+    const next = reorder(ids, from, insertAt)
+    if (next === ids) return
+    updateChainProviders(chainIndex, providers => providers.map(member =>
+      member.type === 'provider' && member.id === provider ? { ...member, accounts: next } : member))
+  }
+
+  const providerDisplay = (member: MemberDraft): string => {
     if (member.type === 'provider') {
       const label = providerIndex.get(member.id)?.label ?? member.id
       const count = providerIndex.get(member.id)?.count
@@ -895,14 +818,20 @@ function GroupEditor({
     return provider ? `${provider} · ${display}` : display
   }
 
+  const addExtraPattern = () => {
+    const text = extraInput.trim()
+    if (text && !patterns.includes(text)) setPatterns(prev => [...prev, text])
+    setExtraInput('')
+  }
+
   const submit = async () => {
     if (saving) return
     // ── 提交前硬校验：缺什么直接说清楚（只 toast 一种提示）──
     const problems: string[] = []
     if (!name.trim()) problems.push(t('组名为空'))
-    if (members.length === 0) problems.push(t('还没有成员（至少要有一个平台或账号）'))
-    if (patterns.length === 0 && effectiveKeys.length === 0) {
-      problems.push(t('还没有选模型（至少勾一个模型，或在高级里写一个模式）'))
+    if (chains.length === 0) problems.push(t('还没有模型链路（至少勾一个模型或自动组）'))
+    if (patterns.length === 0 && chains.every(chain => !chain.key)) {
+      problems.push(t('还没有模型匹配（勾的链路都没有键，或高级里写一个模式）'))
     }
     if (problems.length > 0) {
       toast(t('还不能保存：{problems}', { problems: problems.join('；') }), 'err')
@@ -912,11 +841,13 @@ function GroupEditor({
     setSaving(true)
     const body: Record<string, unknown> = {
       name: name.trim(),
-      models: patterns,
-      normalizedKeys: effectiveKeys,
-      members: members.map(member => member.type === 'provider'
-        ? { type: 'provider', id: member.id, accounts: member.accounts ?? [] }
-        : { type: 'account', id: member.id }),
+      patterns,
+      chains: chains.map(chain => ({
+        key: chain.key,
+        providers: chain.providers.map(member => member.type === 'provider'
+          ? { type: 'provider', id: member.id, accounts: member.accounts ?? [] }
+          : { type: 'account', id: member.id }),
+      })),
       settings: draftToSettings(draft),
     }
     if (customize) body.id = customize.id
@@ -944,6 +875,7 @@ function GroupEditor({
   const matchedCount = preview?.matchedCount ?? null
   const unservedCount = preview?.unservedMembers.length ?? 0
   const orphanCount = preview?.orphanPatterns.length ?? 0
+  const providerCount = chains.reduce((sum, chain) => sum + chain.providers.length, 0)
 
   return (
     <div className='rg-card is-editing'>
@@ -955,7 +887,7 @@ function GroupEditor({
       </div>
 
       {customize ? (
-        <div className='hint' style={{ padding: '8px 14px 0' }}>{t('正在编辑自动组「{key}」：保存后它成为可编辑的组（不再随各家清单自动变化），删除它即恢复自动识别。', { key: customize.key })}</div>
+        <div className='hint' style={{ padding: '8px 16px 0' }}>{t('正在编辑自动组「{key}」：保存后它成为可编辑的组（不再随各家清单自动变化），删除它即恢复自动识别。', { key: customize.key })}</div>
       ) : null}
 
       {/* 组名 + 实时关系统计（边改边看） */}
@@ -966,7 +898,7 @@ function GroupEditor({
           ? <span className='rg-stat'>{t('正在计算覆盖…')}</span>
           : <>
             <span className='rg-stat'>{t('命中 {count} 个模型', { count: matchedCount })}</span>
-            <span className='rg-stat'>{t('成员 {count} 个', { count: members.length })}</span>
+            <span className='rg-stat'>{t('链路 {count} 条', { count: chains.length })}</span>
             {unservedCount > 0
               ? <span className='rg-stat is-bad'>{t('{count} 个成员接不到活', { count: unservedCount })}</span>
               : null}
@@ -976,55 +908,51 @@ function GroupEditor({
           </>}
       </div>
 
-      {/* ① 成员与账号（拖动调整顺序，越靠前越先用；↑↓ 保留作备用） */}
+      {/* ① 模型链路（列表 = 路由优先级；拖动调整顺序） */}
       <div className='rg-field'>
         <div className='rg-field-label'>
-          {t('成员与账号')}
-          <span className='hint'>{t('拖动调整顺序，越靠前越先用；也可用 ↑↓')}</span>
+          {t('模型链路')}
+          <span className='hint'>{t('拖动调整路由优先级，越靠前越先用；展开可调链内各家顺序或点名账号')}</span>
         </div>
-        <div className='rg-members'>
-          {members.length === 0
-            ? <div className='hint'>{t('还没有成员：在下面的选择器里勾选模型或自动组，提供它们的各家会自动成为成员；也可点供应商行的 + 手动加入。')}</div>
-            : members.map((member, index) => {
-              const display = memberDisplay(member)
-              const serves = servesOf(member)
-              const provider = member.type === 'provider' ? member.id : providerOfAccount(member.id)
-              const avatarProvider = member.type === 'provider' ? member.id : (accountOptions.find(item => item.id === member.id)?.provider ?? '')
-              const state = provider ? platformState(provider) : { whole: false, accounts: [] as string[] }
-              const expanded = Boolean(provider) && expandedProvider === provider
-              const orderedCount = (member.accounts ?? []).length
+        <div className='rg-chains'>
+          {chains.length === 0
+            ? <div className='hint'>{t('还没有链路：在下面的选择器里勾选模型或自动组，承载它的各家会自动进入链路。')}</div>
+            : chains.map((chain, chainIndex) => {
+              const open = expandedChain === chainIndex
+              const isAuto = autoGroupsOf(payload).some(item => item.key === chain.key)
               return (
-                <React.Fragment key={memberKeyOf(member)}>
+                <React.Fragment key={`${chain.key}:${chainIndex}`}>
                   <div
-                    className={`rg-member${dragClasses(memberDrag, index)}`}
+                    className={`rg-chain-row${dragClasses(chainDrag, chainIndex)}${open ? ' is-open' : ''}`}
                     draggable
                     onDragStart={event => {
                       event.dataTransfer.effectAllowed = 'move'
-                      event.dataTransfer.setData('text/plain', memberKeyOf(member))
-                      const mark = { from: index, over: index, after: false }
-                      memberDragRef.current = mark
-                      setMemberDrag(mark)
+                      event.dataTransfer.setData('text/plain', chain.key || String(chainIndex))
+                      const mark = { from: chainIndex, over: chainIndex, after: false }
+                      chainDragRef.current = mark
+                      setChainDrag(mark)
                     }}
                     onDragOver={event => {
                       event.preventDefault()
-                      const current = memberDragRef.current
+                      const current = chainDragRef.current
                       if (!current) return
                       const rect = event.currentTarget.getBoundingClientRect()
                       const after = event.clientY > rect.top + rect.height / 2
-                      const next = { ...current, over: index, after }
-                      memberDragRef.current = next
-                      setMemberDrag(next)
+                      const next = { ...current, over: chainIndex, after }
+                      chainDragRef.current = next
+                      setChainDrag(next)
                     }}
                     onDrop={event => {
                       event.preventDefault()
-                      const mark = memberDragRef.current
-                      memberDragRef.current = null
-                      setMemberDrag(null)
+                      const mark = chainDragRef.current
+                      chainDragRef.current = null
+                      setChainDrag(null)
                       if (mark) {
-                        setMembers(prev => reorder(prev, mark.from, mark.over + (mark.after ? 1 : 0)))
+                        setChains(prev => reorder(prev, mark.from, mark.over + (mark.after ? 1 : 0)))
                       }
                     }}
-                    onDragEnd={() => { memberDragRef.current = null; setMemberDrag(null) }}>
+                    onDragEnd={() => { chainDragRef.current = null; setChainDrag(null) }}
+                    onClick={() => setExpandedChain(open ? null : chainIndex)}>
                     <span className='rg-grip' title={t('按住拖动调整顺序')} aria-hidden>
                       <svg width='12' height='12' viewBox='0 0 24 24' fill='currentColor'>
                         <circle cx='9' cy='5' r='1.7' /><circle cx='15' cy='5' r='1.7' />
@@ -1032,118 +960,210 @@ function GroupEditor({
                         <circle cx='9' cy='19' r='1.7' /><circle cx='15' cy='19' r='1.7' />
                       </svg>
                     </span>
-                    <span className='rg-order'>{index + 1}</span>
-                    <ProviderAvatar provider={avatarProvider} label={display} size={18} />
-                    <Badge variant={member.type === 'provider' ? 'secondary' : 'outline'} className='rg-kind'>
-                      {member.type === 'provider' ? t('全部账号') : t('指定账号')}
-                    </Badge>
-                    <span className='rg-member-label' title={display}>{display}</span>
-                    {member.type === 'provider' && orderedCount > 0
-                      ? <span className='hint'>{t('已定顺序 {count} 个', { count: orderedCount })}</span>
-                      : null}
-                    {serves === null
-                      ? null
-                      : serves > 0
-                        ? <Badge variant='outline'>{t('承接 {count} 个模型', { count: serves })}</Badge>
-                        : <Badge variant='destructive'>{t('接不到任何已选模型')}</Badge>}
-                    {provider ? (
-                      <button type='button' className='rg-btn'
-                        title={t('改这个平台的账号范围（默认全部账号）')}
-                        onClick={() => setExpandedProvider(expanded ? null : provider)}>
-                        {t('账号')}
-                      </button>
-                    ) : null}
-                    <button type='button' className='rg-btn is-icon' disabled={index === 0}
-                      title={t('上移（更先用）')} onClick={() => moveMember(index, -1)}>↑</button>
+                    <span className='rg-order'>{chainIndex + 1}</span>
+                    <span className='rg-chain-label' title={chain.key || t('通配模式兜底链')}>{chain.label}</span>
+                    {isAuto ? <Badge variant='secondary'>{t('自动组')}</Badge> : null}
+                    {!chain.key ? <Badge variant='outline'>{t('模式兜底')}</Badge> : null}
+                    <AvatarStack items={chain.providers.map(member => ({
+                      provider: member.type === 'provider' ? member.id : (accountOptions.find(item => item.id === member.id)?.provider ?? ''),
+                      label: member.type === 'provider'
+                        ? (providerIndex.get(member.id)?.label ?? member.id)
+                        : (accountOptions.find(item => item.id === member.id)?.name ?? member.id),
+                    }))} size={18} />
+                    <span className='hint'>{t('{count} 家', { count: chain.providers.length })}</span>
+                    <span style={{ flex: 1 }} />
+                    <span className={`rg-caret${open ? ' is-open' : ''}`} aria-hidden>▸</span>
+                    <button type='button' className='rg-btn is-icon' disabled={chainIndex === 0}
+                      title={t('上移（更先用）')}
+                      onClick={event => { event.stopPropagation(); moveChain(chainIndex, -1) }}>↑</button>
+                    <button type='button' className='rg-btn is-icon' disabled={chainIndex === chains.length - 1}
+                      title={t('下移')}
+                      onClick={event => { event.stopPropagation(); moveChain(chainIndex, 1) }}>↓</button>
                     <button type='button' className='rg-btn is-icon'
-                      disabled={index === members.length - 1}
-                      title={t('下移')} onClick={() => moveMember(index, 1)}>↓</button>
-                    <button type='button' className='rg-btn is-icon'
-                      title={t('移出成员')} onClick={() => removeMember(member)}>✕</button>
+                      title={t('移出这条链路')}
+                      onClick={event => { event.stopPropagation(); removeChain(chainIndex) }}>✕</button>
                   </div>
-                  {expanded && provider ? (
-                    <div className='rg-scope'>
-                      <label className='switch' onClick={event => event.stopPropagation()}>
-                        <Switch size='sm' checked={state.whole}
-                          onCheckedChange={() => togglePlatformWhole(provider)} />
-                        <span>{t('全部账号（该平台所有账号，含以后新增的）')}</span>
-                      </label>
-                      <div className='hint'>
-                        {state.whole
-                          ? t('拖动账号调整它在本组里的先后；没拖到的新账号排在后面（同层按账号页优先级）。点一下可把某个账号移出本组。')
-                          : t('点一下把账号加进本组（全选会自动回到「全部账号」）；先后在成员列表里拖动。')}
-                      </div>
-                      <div className='rg-scope-list'>
-                        {orderedScopeAccounts(provider).map((account, index) => {
-                          const checked = state.whole || state.accounts.includes(account.id)
-                          const mark = scopeDrag && scopeDrag.provider === provider ? scopeDrag : null
-                          const rowClass = `rg-scope-row${checked ? ' is-picked' : ''}${state.whole ? dragClasses(mark, index) : ''}`
-                          const content = (
-                            <>
-                              {state.whole
-                                ? <span className='rg-grip' title={t('按住拖动调整顺序')} aria-hidden>
-                                  <svg width='12' height='12' viewBox='0 0 24 24' fill='currentColor'>
-                                    <circle cx='9' cy='5' r='1.7' /><circle cx='15' cy='5' r='1.7' />
-                                    <circle cx='9' cy='12' r='1.7' /><circle cx='15' cy='12' r='1.7' />
-                                    <circle cx='9' cy='19' r='1.7' /><circle cx='15' cy='19' r='1.7' />
-                                  </svg>
-                                </span>
-                                : null}
-                              <span className='rg-check' aria-hidden>{checked ? '✓' : ''}</span>
-                              <span className='rg-scope-name'>{account.name ?? account.id}</span>
-                              {account.enabled === false ? <Badge variant='outline'>{t('已停用')}</Badge> : null}
-                            </>
-                          )
-                          if (!state.whole) {
-                            return (
-                              <button key={account.id} type='button' className={rowClass}
-                                onClick={() => togglePlatformAccount(provider, account.id)}>{content}</button>
-                            )
-                          }
-                          return (
-                            <div key={account.id} role='button' tabIndex={0} className={rowClass}
-                              onClick={() => togglePlatformAccount(provider, account.id)}
-                              onKeyDown={event => {
-                                if (event.key === 'Enter' || event.key === ' ') {
-                                  event.preventDefault()
-                                  togglePlatformAccount(provider, account.id)
-                                }
-                              }}
+
+                  {open ? (
+                    <div className='rg-chain-body'>
+                      {chain.providers.map((member, providerIndexInChain) => {
+                        const provider = member.type === 'provider' ? member.id : (accountOptions.find(item => item.id === member.id)?.provider ?? '')
+                        const state = provider ? providerState(chain, provider) : { whole: false, named: [] as string[] }
+                        const scopeOpen = expandedScope?.chain === chainIndex && expandedScope.provider === provider
+                        const serves = servesOf(chainIndex, member)
+                        const display = providerDisplay(member)
+                        const mark = providerDrag && providerDrag.chain === chainIndex ? providerDrag : null
+                        return (
+                          <React.Fragment key={`${chainIndex}:${memberKeyOf(member)}`}>
+                            <div
+                              className={`rg-provider-row${dragClasses(mark, providerIndexInChain)}`}
                               draggable
                               onDragStart={event => {
                                 event.dataTransfer.effectAllowed = 'move'
-                                event.dataTransfer.setData('text/plain', account.id)
-                                const mark = { provider, from: index, over: index, after: false }
-                                scopeDragRef.current = mark
-                                setScopeDrag(mark)
+                                event.dataTransfer.setData('text/plain', memberKeyOf(member))
+                                const next = { chain: chainIndex, from: providerIndexInChain, over: providerIndexInChain, after: false }
+                                providerDragRef.current = next
+                                setProviderDrag(next)
                               }}
                               onDragOver={event => {
                                 event.preventDefault()
-                                const current = scopeDragRef.current
-                                if (!current) return
+                                const current = providerDragRef.current
+                                if (!current || current.chain !== chainIndex) return
                                 const rect = event.currentTarget.getBoundingClientRect()
                                 const after = event.clientY > rect.top + rect.height / 2
-                                const next = { ...current, over: index, after }
-                                scopeDragRef.current = next
-                                setScopeDrag(next)
+                                const next = { ...current, over: providerIndexInChain, after }
+                                providerDragRef.current = next
+                                setProviderDrag(next)
                               }}
                               onDrop={event => {
                                 event.preventDefault()
-                                const mark = scopeDragRef.current
-                                scopeDragRef.current = null
-                                setScopeDrag(null)
-                                if (mark) {
-                                  moveScopeAccount(mark.provider, mark.from, mark.over + (mark.after ? 1 : 0))
+                                const drag = providerDragRef.current
+                                providerDragRef.current = null
+                                setProviderDrag(null)
+                                if (drag && drag.chain === chainIndex) {
+                                  updateChainProviders(chainIndex, providers =>
+                                    reorder(providers, drag.from, drag.over + (drag.after ? 1 : 0)))
                                 }
                               }}
-                              onDragEnd={() => { scopeDragRef.current = null; setScopeDrag(null) }}>
-                              {content}
+                              onDragEnd={() => { providerDragRef.current = null; setProviderDrag(null) }}>
+                              <span className='rg-grip' title={t('按住拖动调整链内顺序')} aria-hidden>
+                                <svg width='12' height='12' viewBox='0 0 24 24' fill='currentColor'>
+                                  <circle cx='9' cy='5' r='1.7' /><circle cx='15' cy='5' r='1.7' />
+                                  <circle cx='9' cy='12' r='1.7' /><circle cx='15' cy='12' r='1.7' />
+                                  <circle cx='9' cy='19' r='1.7' /><circle cx='15' cy='19' r='1.7' />
+                                </svg>
+                              </span>
+                              <span className='rg-order'>{providerIndexInChain + 1}</span>
+                              <ProviderAvatar
+                                provider={member.type === 'provider' ? member.id : (accountOptions.find(item => item.id === member.id)?.provider ?? '')}
+                                label={display} size={18} />
+                              <span className='rg-member-label' title={display}>{display}</span>
+                              {member.type === 'provider' && (member.accounts ?? []).length > 0
+                                ? <span className='hint'>{t('已定顺序 {count} 个', { count: (member.accounts ?? []).length })}</span>
+                                : null}
+                              {serves === null ? null : serves > 0
+                                ? <Badge variant='outline'>{t('承接 {count} 个模型', { count: serves })}</Badge>
+                                : <Badge variant='destructive'>{t('接不到任何已选模型')}</Badge>}
+                              {member.type === 'provider' && provider ? (
+                                <button type='button' className='rg-btn'
+                                  title={t('改这个平台的账号范围（默认全部账号）')}
+                                  onClick={() => setExpandedScope(scopeOpen ? null : { chain: chainIndex, provider })}>
+                                  {t('账号')}
+                                </button>
+                              ) : null}
+                              <button type='button' className='rg-btn is-icon' disabled={providerIndexInChain === 0}
+                                title={t('上移')}
+                                onClick={() => moveProvider(chainIndex, providerIndexInChain, -1)}>↑</button>
+                              <button type='button' className='rg-btn is-icon'
+                                disabled={providerIndexInChain === chain.providers.length - 1}
+                                title={t('下移')}
+                                onClick={() => moveProvider(chainIndex, providerIndexInChain, 1)}>↓</button>
+                              <button type='button' className='rg-btn is-icon'
+                                title={t('移出这条链')}
+                                onClick={() => removeProvider(chainIndex, member)}>✕</button>
                             </div>
-                          )
-                        })}
-                        {accountsOfProvider(provider).length === 0
-                          ? <div className='hint'>{t('这个平台没有账号')}</div> : null}
-                      </div>
+
+                            {scopeOpen && provider ? (
+                              <div className='rg-scope'>
+                                <label className='switch' onClick={event => event.stopPropagation()}>
+                                  <Switch size='sm' checked={state.whole}
+                                    onCheckedChange={() => toggleWholeProvider(chainIndex, provider)} />
+                                  <span>{t('全部账号（该平台所有账号，含以后新增的）')}</span>
+                                </label>
+                                <div className='hint'>
+                                  {state.whole
+                                    ? t('拖动账号调整它在这条链里的先后；没拖到的新账号排在后面（同层按账号页优先级）。点一下可把某个账号移出本链。')
+                                    : t('点一下把账号加进本链（全选会自动回到「全部账号」）；先后在链里拖动。')}
+                                </div>
+                                <div className='rg-scope-list'>
+                                  {orderedScopeAccounts(chain, provider).map((account, index) => {
+                                    const checked = state.whole || state.named.includes(account.id)
+                                    const scopeMark = scopeDrag && scopeDrag.chain === chainIndex && scopeDrag.provider === provider ? scopeDrag : null
+                                    const rowClass = `rg-scope-row${checked ? ' is-picked' : ''}${state.whole ? dragClasses(scopeMark, index) : ''}`
+                                    const content = (
+                                      <>
+                                        {state.whole
+                                          ? <span className='rg-grip' title={t('按住拖动调整顺序')} aria-hidden>
+                                            <svg width='12' height='12' viewBox='0 0 24 24' fill='currentColor'>
+                                              <circle cx='9' cy='5' r='1.7' /><circle cx='15' cy='5' r='1.7' />
+                                              <circle cx='9' cy='12' r='1.7' /><circle cx='15' cy='12' r='1.7' />
+                                              <circle cx='9' cy='19' r='1.7' /><circle cx='15' cy='19' r='1.7' />
+                                            </svg>
+                                          </span>
+                                          : null}
+                                        <span className='rg-check' aria-hidden>{checked ? '✓' : ''}</span>
+                                        <span className='rg-scope-name'>{account.name ?? account.id}</span>
+                                        {account.enabled === false ? <Badge variant='outline'>{t('已停用')}</Badge> : null}
+                                      </>
+                                    )
+                                    if (!state.whole) {
+                                      return (
+                                        <button key={account.id} type='button' className={rowClass}
+                                          onClick={() => toggleNamedAccount(chainIndex, provider, account.id)}>{content}</button>
+                                      )
+                                    }
+                                    return (
+                                      <div key={account.id} role='button' tabIndex={0} className={rowClass}
+                                        onClick={() => toggleNamedAccount(chainIndex, provider, account.id)}
+                                        onKeyDown={event => {
+                                          if (event.key === 'Enter' || event.key === ' ') {
+                                            event.preventDefault()
+                                            toggleNamedAccount(chainIndex, provider, account.id)
+                                          }
+                                        }}
+                                        draggable
+                                        onDragStart={event => {
+                                          event.dataTransfer.effectAllowed = 'move'
+                                          event.dataTransfer.setData('text/plain', account.id)
+                                          const next = { chain: chainIndex, provider, from: index, over: index, after: false }
+                                          scopeDragRef.current = next
+                                          setScopeDrag(next)
+                                        }}
+                                        onDragOver={event => {
+                                          event.preventDefault()
+                                          const current = scopeDragRef.current
+                                          if (!current || current.chain !== chainIndex || current.provider !== provider) return
+                                          const rect = event.currentTarget.getBoundingClientRect()
+                                          const after = event.clientY > rect.top + rect.height / 2
+                                          const next = { ...current, over: index, after }
+                                          scopeDragRef.current = next
+                                          setScopeDrag(next)
+                                        }}
+                                        onDrop={event => {
+                                          event.preventDefault()
+                                          const drag = scopeDragRef.current
+                                          scopeDragRef.current = null
+                                          setScopeDrag(null)
+                                          if (drag && drag.chain === chainIndex && drag.provider === provider) {
+                                            moveScopeAccount(drag.chain, drag.provider, drag.from, drag.over + (drag.after ? 1 : 0))
+                                          }
+                                        }}
+                                        onDragEnd={() => { scopeDragRef.current = null; setScopeDrag(null) }}>
+                                        {content}
+                                      </div>
+                                    )
+                                  })}
+                                  {accountsOfProvider(provider).length === 0
+                                    ? <div className='hint'>{t('这个平台没有账号')}</div> : null}
+                                </div>
+                              </div>
+                            ) : null}
+                          </React.Fragment>
+                        )
+                      })}
+                      {addableProvidersOf(chain).length > 0 ? (
+                        <div className='rg-chain-add'>
+                          <span className='hint'>{t('补家：')}</span>
+                          {addableProvidersOf(chain).map(option => (
+                            <button key={option.id} type='button' className='rp-mini'
+                              title={t('把这一家加进这条链')}
+                              onClick={() => addProviderToChain(chainIndex, option.id)}>
+                              <ProviderAvatar provider={option.id} label={option.label} size={14} />
+                              {option.label ?? option.id}
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </React.Fragment>
@@ -1152,55 +1172,33 @@ function GroupEditor({
         </div>
       </div>
 
-      {/* ② 模型与路由组（同一浮层选择器：搜索置顶、来源导航、扁平打分） */}
+      {/* ② 模型 / 自动组目录面板（勾选 = 加一条链；再点 = 删那条链） */}
       <div className='rg-field'>
         <div className='rg-field-label'>
           {t('承接的模型')}
-          <span className='hint'>{t('勾选即接住，各家的同源拼写自动一起接住；路由组可整组勾选')}</span>
-        </div>
-        <div className='rg-picked' style={{ marginBottom: 8 }}>
-          {checkedModels.length === 0 && extraPatterns.length === 0
-            ? <span className='hint'>{t('还没有选模型。')}</span>
-            : <>
-              {checkedModels.map(id => (
-                <span key={id} className='rg-chip'>
-                  <span>{id}</span>
-                  <button type='button' title={t('移出这个模型')} onClick={() => toggleModel(id)}>✕</button>
-                </span>
-              ))}
-              {extraPatterns.map(pattern => (
-                <span key={pattern} className='rg-chip is-extra'>
-                  <span>{pattern}</span>
-                  <button type='button' title={t('移出这个模式')}
-                    onClick={() => setPatterns(prev => prev.filter(item => item !== pattern))}>✕</button>
-                </span>
-              ))}
-            </>}
+          <span className='hint'>{t('勾选即成链，各家自动带入；自动组可整组勾选')}</span>
         </div>
         <ModelPicker
           models={catalogModels}
           autoGroups={payload?.autoGroups ?? []}
-          providers={providerOptions}
-          selectedIds={patterns}
+          selectedKeys={selectedKeys}
           matchedIds={matchedModelIds}
           onToggleModel={toggleModel}
           onToggleGroup={toggleGroup}
-          onJoinProvider={provider => applyPlatform(provider, 'all')}
         />
       </div>
 
-      {/* ③ 高级（默认收起；功能不减）：额外模式 + 组级策略 */}
+      {/* ③ 高级（默认收起；功能不减）：通配模式 + 组级策略 */}
       <button type='button' className='rg-advanced-toggle'
         onClick={() => setAdvancedOpen(prev => !prev)} aria-expanded={advancedOpen}>
         <svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.4' strokeLinecap='round'
           style={{ transform: advancedOpen ? 'rotate(90deg)' : undefined, transition: 'transform 140ms ease' }}>
           <path d='m9 6 6 6-6 6' />
         </svg>
-        {t('高级：额外模式与组级策略')}
+        {t('高级：通配模式与组级策略')}
         <span className='hint'>
-          {t('（额外模式 {patterns} 个 · 同源键 {keys} 个 · 策略：{policy}）', {
-            patterns: extraPatterns.length,
-            keys: effectiveKeys.length,
+          {t('（模式 {patterns} 个 · 策略：{policy}）', {
+            patterns: patterns.length,
             policy: settingsSummary(draftToSettingsView(draft)),
           })}
         </span>
@@ -1208,20 +1206,24 @@ function GroupEditor({
       {advancedOpen ? (
         <>
           <div className='rg-advanced'>
-            <div className='rg-field-label'>{t('额外模式（支持 * 通配，如 gpt-5*；回车加入）')}</div>
+            <div className='rg-field-label'>{t('通配模式（支持 * 通配，如 gpt-5*；回车加入）')}</div>
             <input
               className='rg-pattern-input'
               value={extraInput}
-              aria-label={t('额外模式')}
+              aria-label={t('通配模式')}
               placeholder={t('例如 gpt-5*')}
               onChange={event => setExtraInput(event.target.value)}
               onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); addExtraPattern() } }}
               onBlur={addExtraPattern} />
-            {legacyKeys.length > 0 ? (
-              <div className='hint' style={{ marginTop: 6 }}>
-                {t('同源匹配还包含 {count} 个原有键（保持原样）：{keys}', {
-                  count: legacyKeys.length, keys: legacyKeys.join('、'),
-                })}
+            {patterns.length > 0 ? (
+              <div className='rg-picked' style={{ marginTop: 8 }}>
+                {patterns.map(pattern => (
+                  <span key={pattern} className='rg-chip is-extra'>
+                    <span>{pattern}</span>
+                    <button type='button' title={t('移出这个模式')}
+                      onClick={() => setPatterns(prev => prev.filter(item => item !== pattern))}>✕</button>
+                  </span>
+                ))}
               </div>
             ) : null}
           </div>
@@ -1316,13 +1318,18 @@ function GroupEditor({
 
       {/* 底部动作条：保存 / 取消钉在卡片右下角（滚动区外，永远够得着） */}
       <div className='rg-editor-foot'>
-        <span className='hint'>{t('成员顺序就是组内队列顺序：越靠前越先用')}</span>
+        <span className='hint'>{t('链路顺序就是路由优先级：越靠前越先用 · 共 {count} 个成员', { count: providerCount })}</span>
         <span className='spacer' />
         <Button variant='outline' size='sm' disabled={saving} onClick={onCancel}>{t('取消')}</Button>
         <Button size='sm' disabled={saving} onClick={() => void submit()}>{saving ? t('保存中…') : t('保存')}</Button>
       </div>
     </div>
   )
+}
+
+/** 当前 payload 里的自动组（链行判断「自动组」徽标用） */
+function autoGroupsOf(payload: RoutingGroupsPayload | null): RoutingAutoGroupView[] {
+  return payload?.autoGroups ?? []
 }
 
 declare global {

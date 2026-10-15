@@ -125,7 +125,7 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
                 .first()
                 .map(|(provider, _)| provider.clone())
                 .unwrap_or_default();
-            let mut object = item.as_object_mut()?;
+            let object = item.as_object_mut()?;
             object.insert("providers".to_string(), Value::Array(ids));
             object.insert("providerLabels".to_string(), Value::Array(labels));
             // 自动跨家组的标识走 **name 前缀**（`Auto · 名字`），不加新字段：

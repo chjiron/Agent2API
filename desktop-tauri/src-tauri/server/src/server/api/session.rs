@@ -156,11 +156,11 @@ fn routed_account_id(accounts: &Value, model: Option<&str>, counts: &HashMap<Str
         })
         .collect();
     let group = crate::server::core::routing_groups::resolve_for(model);
-    // 组把候选收窄到成员（与 `rotate::group_scope` 同一判据），并带上**组内顺位**：
+    // 组把候选收窄到链路成员（与 `rotate::group_scope` 同一判据），并带上**组内顺位**：
     // ★ 与转发选路因此读同一套排序（成员顺序优先、全部账号成员内按拖拽顺序）。
-    let scoped = group.as_ref().is_some_and(|group| !group.members.is_empty());
+    let scoped = group.as_ref().is_some_and(|group| group.narrows());
     let (candidate_accounts, ranks) =
-        crate::server::core::routing_groups::scope(group.as_ref(), candidate_accounts);
+        crate::server::core::routing_groups::scope(group.as_ref(), Some(model), candidate_accounts);
     if scoped && candidate_accounts.is_empty() {
         // 组成员里没有能承接这个模型的账号：转发会 503，★ 给空
         return Value::Null;

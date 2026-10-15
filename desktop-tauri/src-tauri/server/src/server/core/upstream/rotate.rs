@@ -137,12 +137,16 @@ pub(super) async fn select_target_account(
 ) -> Result<RouteTarget, GatewayError> {
     let pinned = ctx.pinned_account;
     let group = ctx.routing_group;
-    let (accounts, ranks) = group_scope(accounts_in_providers(service, providers, pinned), group);
-    // 组把候选收窄到成员后没有剩：这是可操作的配置问题（成员被删 / 成员所属
+    let (accounts, ranks) = group_scope(
+        accounts_in_providers(service, providers, pinned),
+        group,
+        Some(keys.request_model()),
+    );
+    // 组把候选收窄到链路成员后没有剩：这是可操作的配置问题（成员被删 / 成员所属
     // 平台不承载该模型），给一条点名路由组的 503。没有组时保持原语义：这些家
     // 都没有账号记录 → 用第一家的默认登录态（环境变量旁路等）。
     if accounts.is_empty() {
-        if let Some(group) = group.filter(|group| !group.members.is_empty()) {
+        if let Some(group) = group.filter(|group| group.narrows()) {
             return Err(GatewayError::with_status(
                 503,
                 format!(
@@ -599,7 +603,11 @@ pub(super) fn pick_next_account(
 ) -> Option<Value> {
     let pinned = ctx.pinned_account;
     let group = ctx.routing_group;
-    let (accounts, ranks) = group_scope(accounts_in_providers(service, providers, pinned), group);
+    let (accounts, ranks) = group_scope(
+        accounts_in_providers(service, providers, pinned),
+        group,
+        Some(keys.request_model()),
+    );
     // 换号顺延与第一级选路同一份候选剔除：被限制器拦下的账号不会在 429 之后
     // 被当作「下一个」重新塞进来
     let (candidates, balance_blocked_ids) = filter_limiter_blocked(&accounts, pinned);
@@ -625,16 +633,17 @@ pub(super) fn pick_next_account(
     plan.ordered.into_iter().next().map(|entry| entry.account)
 }
 
-/// 把候选账号按路由组的成员表收窄，并算出**组内顺位**（账号 id → 位次）。
+/// 把候选账号按路由组的链路收窄，并算出**组内顺位**（账号 id → 位次）。
 ///
 /// 判据本体在 `routing_groups::scope`（转发选路、★ 推算、队列面板三处共用
 /// 同一份实现 —— 面板画的顺序与转发实际会走的顺序因此不可能分叉），这里只
-/// 是转发侧的调用点。
+/// 是转发侧的调用点。`model` 决定选哪条链（见 `ResolvedGroup::members_for`）。
 fn group_scope(
     accounts: Vec<Value>,
     group: Option<&ResolvedGroup>,
+    model: Option<&str>,
 ) -> (Vec<Value>, HashMap<String, usize>) {
-    crate::server::core::routing_groups::scope(group, accounts)
+    crate::server::core::routing_groups::scope(group, model, accounts)
 }
 
 /// 轮转游标的键：有组时按「组×模型」分键（组内轮换互不干扰，不同组的同名
@@ -671,12 +680,12 @@ fn decision_json(
         "strategy": settings.strategy.as_str(),
         "sticky": settings.sticky.as_str(),
         // 命中的路由组（`null` = 全局队列）：请求日志的「路由回放」要能回答
-        // 「为什么候选池是这几个账号」——组把成员收窄过，这一条就是答案
+        // 「为什么候选池是这几个账号」——组按链路收窄过，这一条就是答案
         "group": group.map(|group| json!({
             "id": group.id,
             "name": group.name,
             "auto": group.auto,
-            "memberCount": group.members.len(),
+            "chainCount": group.chains.len(),
         })).unwrap_or(Value::Null),
         "stickyHit": plan.sticky_hit,
         "picked": plan.ordered.first().map(|entry| entry.id.clone()).unwrap_or_default(),

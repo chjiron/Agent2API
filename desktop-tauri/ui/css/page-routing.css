@@ -340,31 +340,93 @@
 
 .rg-stat.is-bad { background: color-mix(in oklab, var(--danger) 10%, transparent); color: var(--danger); }
 
-/* 成员行：把手 + 顺位 + 头像 + 名字 + 徽章 + 动作；行高 40 */
-.rg-members { display: flex; flex-direction: column; gap: 7px; }
+/* ─── 模型链路（编辑器主体：一条链 = 一个模型 + 承接它的各家）──────
+   链行 = 把手 + 顺位 + 模型名 + 各家头像串 + 展开箭头 + 动作；拖链行 = 拖路由优先级。
+   展开链体 = 各家行（可再拖顺序、点名账号）+ 补家胶囊。 */
+.rg-chains { display: flex; flex-direction: column; gap: 7px; }
 
-.rg-member {
+.rg-chain-row {
   display: flex;
   align-items: center;
   gap: 9px;
-  min-height: 40px;
+  min-height: 42px;
   padding: 6px 10px;
   border: 1px solid var(--border);
   border-radius: var(--r-md);
   background: var(--surface);
   font-size: 12.5px;
+  cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
 }
 
-.rg-member:hover { border-color: var(--border-strong); }
+.rg-chain-row:hover { border-color: var(--border-strong); }
 
-.rg-member.is-dragging { opacity: 0.45; }
+.rg-chain-row.is-open { border-color: var(--primary-bd); border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 
-.rg-member[draggable='true'] { cursor: grab; user-select: none; }
+.rg-chain-row.is-dragging { opacity: 0.45; }
 
-.rg-member.is-drop-before { box-shadow: inset 0 2px 0 var(--primary); }
+.rg-chain-row[draggable='true'] { cursor: grab; user-select: none; }
 
-.rg-member.is-drop-after { box-shadow: inset 0 -2px 0 var(--primary); }
+.rg-chain-row.is-drop-before { box-shadow: inset 0 2px 0 var(--primary); }
+
+.rg-chain-row.is-drop-after { box-shadow: inset 0 -2px 0 var(--primary); }
+
+.rg-chain-label {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 展开箭头：点链行开合，展开时转 90° */
+.rg-caret {
+  flex: none;
+  color: var(--text-3);
+  font-size: 11px;
+  transition: transform 140ms ease;
+}
+
+.rg-caret.is-open { transform: rotate(90deg); }
+
+/* 链体：展开后的各家行 + 补家胶囊，浅底嵌套面板 */
+.rg-chain-body {
+  margin-top: -3px;
+  padding: 10px 12px;
+  border: 1px solid var(--primary-bd);
+  border-top: 0;
+  border-radius: 0 0 var(--r-md) var(--r-md);
+  background: var(--surface-inset);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 链内一家（可拖顺序、点名账号）；行高 38 */
+.rg-provider-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-size: 12.5px;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.rg-provider-row:hover { border-color: var(--border-strong); }
+
+.rg-provider-row.is-dragging { opacity: 0.45; }
+
+.rg-provider-row[draggable='true'] { cursor: grab; user-select: none; }
+
+.rg-provider-row.is-drop-before { box-shadow: inset 0 2px 0 var(--primary); }
+
+.rg-provider-row.is-drop-after { box-shadow: inset 0 -2px 0 var(--primary); }
 
 .rg-grip {
   flex: none;
@@ -406,7 +468,8 @@
   white-space: nowrap;
 }
 
-.rg-member .rg-btn {
+.rg-chain-row .rg-btn,
+.rg-provider-row .rg-btn {
   flex: none;
   height: 26px;
   padding: 0 10px;
@@ -421,20 +484,50 @@
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 
-.rg-member .rg-btn:hover:not(:disabled) { border-color: var(--primary-bd); color: var(--primary); }
+.rg-chain-row .rg-btn:hover:not(:disabled),
+.rg-provider-row .rg-btn:hover:not(:disabled) { border-color: var(--primary-bd); color: var(--primary); }
 
-.rg-member .rg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.rg-chain-row .rg-btn:disabled,
+.rg-provider-row .rg-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-.rg-member .rg-btn.is-icon { width: 26px; padding: 0; justify-content: center; }
+.rg-chain-row .rg-btn.is-icon,
+.rg-provider-row .rg-btn.is-icon { width: 26px; padding: 0; justify-content: center; }
 
-/* 账号范围展开：比成员行浅一档的嵌套面板 */
+/* 补家胶囊行（链内还缺哪些承载家） */
+.rg-chain-add {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+}
+
+.rg-chain-add .rp-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.rg-chain-add .rp-mini:hover { border-color: var(--primary-bd); color: var(--primary); }
+
+/* 账号范围展开：比家行浅一档的嵌套面板 */
 .rg-scope {
   margin: -3px 0 8px;
   padding: 11px 12px;
   border: 1px solid var(--border);
   border-top: 0;
   border-radius: 0 0 var(--r-md) var(--r-md);
-  background: var(--surface-inset);
+  background: var(--surface);
 }
 
 .rg-scope-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }

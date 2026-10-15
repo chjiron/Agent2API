@@ -1,4 +1,4 @@
-//! 路由组管理 API（`/api/routing-groups`）——设置页「账号路由 → 路由组」的数据源。
+//! 路由组管理 API（`/api/routing-groups`）——路由组页的数据源。
 //!
 //! ── 端点 ────────────────────────────────────────────────────
 //!   GET    /api/routing-groups           全量视图（用户组 + 自动组 + 候选表）
@@ -6,6 +6,12 @@
 //!   POST   /api/routing-groups/from-auto 接管一个自动识别组（沿用它的 id 落成可编辑的组）
 //!   PATCH  /api/routing-groups/{id}      局部更新（给的键才动）
 //!   DELETE /api/routing-groups/{id}      删除组
+//!
+//! ── 数据形态：chains（模型链路，有序）───────────────────────
+//! 组的主体是 `chains: [{key, providers: [{type, id, accounts?}]}]` —— 一条链
+//! = 一个模型（归一化键）+ 承接它的各家（有序）。`patterns` 只放通配模式。
+//! 旧的 `{models, normalizedKeys, members}` 三列表由存储层（`core::routing_groups`）
+//! 在读侧迁移，写侧只认新形态（前后端同发布）。
 //!
 //! ── 为什么每个写操作都返回全量视图（照 `keys_api` 的模式）──────
 //! 「不让前端维护第二份事实」：自动组是清单的函数（随时会变）、候选账号与
@@ -16,7 +22,7 @@
 //! 接管的结果是**沿用自动组 id** 的用户组（`core::routing_groups` 的
 //! `add_with_id`）：解析时用户组先命中、列表里自动组按 id 被剔除 —— 同一个
 //! 概念在界面上永远只有一条，不会出现「自动组还在、旁边多一个同内容的用户组」。
-//! 归一化键与成员初值由**后端**从自动组现算（前端不复制 merge_key 的规则）。
+//! 链初值（key + 各家顺序）由**后端**从自动组现算（前端不复制 merge_key 的规则）。
 //!
 //! ── 校验分工（与 `routing_api::put_routing` 同一模式）──────────
 //! 结构、取值范围与枚举合法性都在这里判（400 说清哪个字段不对）；
@@ -35,16 +41,16 @@ use serde_json::{json, Map, Value};
 use crate::server::config::{self, RouteStrategy, RoutingGroupSettings, StickyMode};
 use crate::server::core::providers::{catalog, kind_from_id};
 use crate::server::core::routing;
-use crate::server::core::routing_groups::{self, GroupMember, RoutingGroup};
+use crate::server::core::routing_groups::{self, Chain, GroupMember, RoutingGroup};
 use crate::server::errors;
 use crate::server::http::{ok_json, parse_body};
 use crate::server::ServerState;
 
 /// 组名的长度上限（观测面：界面一行放得下；再长也说不清是什么组）
 const NAME_MAX_CHARS: usize = 60;
-/// 单组的模式 / 成员数量上限（防御手改库写出一个几万条的怪物）
+/// 单组的链路 / 成员 / 模式数量上限（防御手改库写出一个几万条的怪物）
 const LIST_MAX_ITEMS: usize = 200;
-/// 单条模式 / id 的长度上限
+/// 单条模式 / id / 键的长度上限
 const ITEM_MAX_CHARS: usize = 200;
 
 /// GET /api/routing-groups
@@ -62,13 +68,7 @@ pub async fn create_group(State(state): State<ServerState>, body: Bytes) -> Resp
         Ok(fields) => fields,
         Err(response) => return response,
     };
-    if let Err(message) = routing_groups::add(
-        &file.name,
-        file.models,
-        file.normalized_keys,
-        file.members,
-        file.settings,
-    ) {
+    if let Err(message) = routing_groups::add(&file.name, file.patterns, file.chains, file.settings) {
         return errors::management_error(500, message);
     }
     ok_json(groups_view(&state))
@@ -76,7 +76,7 @@ pub async fn create_group(State(state): State<ServerState>, body: Bytes) -> Resp
 
 /// POST /api/routing-groups/from-auto —— 接管一个自动识别组。
 ///
-/// body：`{id, name?, models?, members?, settings?}`（`id` 必填；其余缺省时
+/// body：`{id, name?, patterns?, chains?, settings?}`（`id` 必填；其余缺省时
 /// 从自动组现算初值）。成功后返回与其它写操作同形的全量视图。
 pub async fn create_group_from_auto(State(state): State<ServerState>, body: Bytes) -> Response {
     let object = match object_body(&body) {
@@ -101,30 +101,26 @@ pub async fn create_group_from_auto(State(state): State<ServerState>, body: Byte
             format!("自动识别组不存在或已变化: {auto_id}（列表可能已经刷新，请重新打开）"),
         );
     };
-    // 初值：名称取自动组展示名；模式取各家真名（去重）；成员 = 各承载家（全部账号，
-    // 按自动组的成员顺序 —— 那顺序就是组内顺位）；归一化键取自动组的键。
-    let default_models: Vec<String> = {
-        let mut names: Vec<String> = Vec::new();
-        for (_, model) in &auto.variants {
-            if !names.iter().any(|known| known.eq_ignore_ascii_case(model)) {
-                names.push(model.clone());
-            }
-        }
-        names
-    };
-    let default_members: Vec<GroupMember> = {
+    // 初值：**一条链**（key = 自动组的归一化键，providers = 各家按自动组的成员
+    // 顺序 —— 那顺序就是链内顺位，接管后用户可在链内拖动改）
+    let default_chains: Vec<Chain> = {
         let mut providers: Vec<String> = Vec::new();
         for (provider, _) in &auto.variants {
             if !providers.contains(provider) {
                 providers.push(provider.clone());
             }
         }
-        providers
+        let members: Vec<GroupMember> = providers
             .into_iter()
             .map(|id| GroupMember::Provider { id, accounts: Vec::new() })
-            .collect()
+            .collect();
+        if members.is_empty() {
+            Vec::new()
+        } else {
+            vec![Chain { key: auto.key.clone(), members }]
+        }
     };
-    // 前端可以带覆盖值（用户在弹窗里改过的名称 / 模式 / 成员 / 策略）；
+    // 前端可以带覆盖值（用户在编辑器里改过的名称 / 模式 / 链 / 策略）；
     // 给的都是「整份」语义（与 PATCH 的 settings 同一取舍，见 update_group）。
     let name = match object.get("name").and_then(Value::as_str).map(str::trim) {
         Some(name) if !name.is_empty() => match required_name_from(name) {
@@ -133,21 +129,21 @@ pub async fn create_group_from_auto(State(state): State<ServerState>, body: Byte
         },
         _ => auto.name.clone(),
     };
-    let models = if object.contains_key("models") {
-        match string_list(&object, "models") {
+    let patterns = if object.contains_key("patterns") {
+        match string_list(&object, "patterns") {
             Ok(list) => list,
             Err(response) => return response,
         }
     } else {
-        default_models
+        Vec::new()
     };
-    let members = if object.contains_key("members") {
-        match members_of(&object) {
+    let chains = if object.contains_key("chains") {
+        match chains_of(&object) {
             Ok(list) => list,
             Err(response) => return response,
         }
     } else {
-        default_members
+        default_chains
     };
     let settings = match settings_of(&object, RoutingGroupSettings::default()) {
         Ok(settings) => settings,
@@ -160,17 +156,7 @@ pub async fn create_group_from_auto(State(state): State<ServerState>, body: Byte
             format!("这个自动组已经编辑过了: {}", auto.id),
         );
     }
-    // 同源键取自动组自己的那个键（[auto.key]）：接管后仍覆盖各家拼写，
-    // 语义与自动识别一致 —— 界面上的「勾选模型」之后会自动维护这份集合。
-    if let Err(message) = routing_groups::add_with_id(
-        config,
-        &auto.id,
-        &name,
-        models,
-        vec![auto.key.clone()],
-        members,
-        settings,
-    ) {
+    if let Err(message) = routing_groups::add_with_id(config, &auto.id, &name, patterns, chains, settings) {
         return errors::management_error(500, message);
     }
     ok_json(groups_view(&state))
@@ -202,40 +188,18 @@ pub async fn update_group(
         Some(Value::Bool(value)) => Some(*value),
         Some(_) => return errors::management_error(400, "enabled 必须是布尔值"),
     };
-    let models = if object.contains_key("models") {
-        match string_list(&object, "models") {
+    let patterns = if object.contains_key("patterns") {
+        match string_list(&object, "patterns") {
             Ok(list) => Some(list),
             Err(response) => return response,
         }
     } else {
         None
     };
-    // normalizedKeys 两态：键缺失 = 不动；给了就必须是字符串数组（空数组 =
-    // 清空同源匹配，回到纯模式匹配）。界面上由「勾选模型」自动维护这份集合。
-    let normalized_keys = match object.get("normalizedKeys") {
-        None | Some(Value::Null) => None,
-        Some(value) => match value.as_array() {
-            Some(items) => {
-                let mut keys: Vec<String> = Vec::new();
-                for item in items {
-                    let Some(text) = item.as_str() else {
-                        return errors::management_error(400, "normalizedKeys 必须是字符串数组");
-                    };
-                    let text = text.trim();
-                    if text.chars().count() > ITEM_MAX_CHARS {
-                        return errors::management_error(400, "normalizedKeys 里有超长的条目");
-                    }
-                    if !text.is_empty() && !keys.iter().any(|known| known == text) {
-                        keys.push(text.to_string());
-                    }
-                }
-                Some(keys)
-            }
-            None => return errors::management_error(400, "normalizedKeys 必须是字符串数组"),
-        },
-    };
-    let members = if object.contains_key("members") {
-        match members_of(&object) {
+    // chains 两态：键缺失 = 不动；给了就必须是数组（空数组 = 清空链路，
+    // 组变成「不生效」）。界面上由「勾选模型 / 拖链路行」自动维护。
+    let chains = if object.contains_key("chains") {
+        match chains_of(&object) {
             Ok(list) => Some(list),
             Err(response) => return response,
         }
@@ -253,7 +217,7 @@ pub async fn update_group(
     } else {
         None
     };
-    match routing_groups::update(&id, name, enabled, models, normalized_keys, members, settings) {
+    match routing_groups::update(&id, name, enabled, patterns, chains, settings) {
         Ok(_) => ok_json(groups_view(&state)),
         Err(message) => errors::management_error(500, message),
     }
@@ -267,52 +231,32 @@ pub async fn delete_group(State(state): State<ServerState>, Path(id): Path<Strin
     }
 }
 
-/// POST /api/routing-groups/preview —— 「匹配规则 × 成员」的**覆盖预览**。
+/// POST /api/routing-groups/preview —— 「链路 × 目录」的**覆盖预览**。
 ///
-/// 弹窗里每次改动（模式 / 归一化键 / 成员）都调一次（前端防抖）：把
-/// 「这个组会接住哪些模型、每个成员能承接几个、有没有空转的成员或模式」
-/// 实时算给用户看 —— 组编辑器最容易说不清的就是这层关系（哪个平台的哪些
-/// 模型、哪个成员接不到活），这里用**后端现算**回答，而不是让前端复制一份
-/// 归一化规则去猜。
+/// 编辑器里每次改动（链 / 模式）都调一次（前端防抖）：把「这个组会接住哪些
+/// 模型、每条链的成员能承接几个、有没有空转的成员或模式」实时算给用户看 ——
+/// 组编辑器最容易说不清的就是这层关系（哪个平台的哪些模型、哪个成员接不到
+/// 活），这里用**后端现算**回答，而不是让前端复制一份归一化规则去猜。
 ///
-/// body：`{models, normalizedKey?, members}`（与创建/更新的字段同名同义）；
-/// 纯计算、不落盘。响应形状见 [`coverage_json`]。
+/// body：`{patterns, chains}`（与创建/更新的字段同名同义）；纯计算、不落盘。
+/// 响应形状见 [`coverage_json`]。
 pub async fn preview_group(State(state): State<ServerState>, body: Bytes) -> Response {
     let object = match object_body(&body) {
         Ok(object) => object,
         Err(response) => return response,
     };
-    let models = match string_list(&object, "models") {
+    let patterns = match string_list(&object, "patterns") {
         Ok(list) => list,
         Err(response) => return response,
     };
-    let members = match members_of(&object) {
+    let chains = match chains_of(&object) {
         Ok(list) => list,
         Err(response) => return response,
     };
-    let normalized_keys: Vec<String> = object
-        .get("normalizedKeys")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
     let store = state.store();
     let account_index = account_index(store);
     let catalog = candidate_models(store);
-    ok_json(coverage_json(
-        &catalog,
-        &account_index,
-        &models,
-        &normalized_keys,
-        &members,
-    ))
+    ok_json(coverage_json(&catalog, &account_index, &patterns, &chains))
 }
 
 /// 勾选式目录的候选模型表：聚合名条目 + `mergeKey`。
@@ -347,22 +291,16 @@ fn candidate_models(store: &crate::server::core::account_store::AccountStore) ->
         .collect()
 }
 
-/// 死模型自动剔除：组里勾选过的**精确名**模型（不含 `*`）在当前候选目录里
-/// 没有任何家承接时，连同它的同源键一起从组里删掉；有改动就整份落盘。
+/// 死链路自动剔除：链的归一化键在当前候选目录里没有任何模型时，整条链删掉；
+/// 有改动就整份落盘。
 ///
 /// 判据与覆盖预览同源（目录 = `candidate_models`，键 = `mergeKey`），前端不
-/// 复制规则。通配模式不剔（「将来这类名字都算」是用户的显式意图，目录暂时
-/// 没有 ≠ 想删）；`normalizedKeys` 里**没有对应精确名**的键也不动（接管自动组
-/// 带来的键、或用户手改的键 —— 静默删别人的配置比留一枚空壳 chip 更糟）。
+/// 复制规则。通配模式不删（「将来这类名字都算」是用户的显式意图）；空键的
+/// 兜底链（旧组迁移来的、只经模式命中）也不删 —— 它没有「键死了」这回事。
 fn prune_dead_models(
     mut groups: Vec<routing_groups::RoutingGroup>,
     catalog_models: &[Value],
 ) -> Vec<routing_groups::RoutingGroup> {
-    // 目录里全部精确名（小写）与全部同源键 —— 一次建表，逐组查
-    let alive_names: std::collections::HashSet<String> = catalog_models
-        .iter()
-        .map(|item| crate::server::core::models::model_id(item).to_lowercase())
-        .collect();
     let alive_keys: std::collections::HashSet<String> = catalog_models
         .iter()
         .filter_map(|item| item.get("mergeKey").and_then(Value::as_str))
@@ -370,82 +308,63 @@ fn prune_dead_models(
         .collect();
     let mut changed = false;
     for group in groups.iter_mut() {
-        let mut dropped_keys: Vec<String> = Vec::new();
-        let before = group.models.len();
-        group.models.retain(|pattern| {
-            if pattern.contains('*') {
-                return true;
-            }
-            let alive = alive_names.contains(&pattern.trim().to_lowercase());
-            if !alive {
-                // 该精确名自己的同源键一并作废（勾选模型时是成对维护的）
-                let key = crate::server::core::models::merge_key(pattern);
-                if !key.is_empty() && !dropped_keys.contains(&key) {
-                    dropped_keys.push(key);
-                }
-            }
-            alive
-        });
-        if !dropped_keys.is_empty() {
-            group.normalized_keys.retain(|key| {
-                // 只删「由被剔的精确名推导出来」的键：目录里还活着的键不动
-                !(dropped_keys.contains(key) && !alive_keys.contains(key))
-            });
-        }
-        changed |= group.models.len() != before;
+        let before = group.chains.len();
+        group.chains.retain(|chain| chain.key.is_empty() || alive_keys.contains(&chain.key));
+        changed |= group.chains.len() != before;
     }
     if changed {
         if let Err(message) = routing_groups::save_all(&groups) {
             // 落盘失败只影响「下次还要再剔一遍」，不影响这次返回的干净视图
-            crate::server::logging::verbose("[RoutingGroups]", &format!("死模型剔除落盘失败: {message}"));
+            crate::server::logging::verbose("[RoutingGroups]", &format!("死链路剔除落盘失败: {message}"));
         }
     }
     groups
 }
 
-/// 覆盖预览：命中模型清单 + 每个成员能承接几个 + 空转项。
+/// 覆盖预览：命中模型清单 + 每个链成员能承接几个 + 空转项。
 ///
 /// ── 判据（与选路同源，不是另写一套）──────────────────────────
-///   · 命中模型：目录里（`session_models`，聚合视图带 `providers` 承载家）
-///     满足「任一模式命中」或「归一化键相同」的模型 —— 模式匹配用
-///     `routing_groups::pattern_matches`、键用 `core::models::merge_key`，
+///   · 命中模型：目录里满足「链键相同」或「任一模式命中」的模型 —— 键用
+///     `core::models::merge_key`、模式用 `routing_groups::pattern_matches`，
 ///     与转发时的判定逐字同源；
-///   · 成员承接数：该成员对应的平台出现在这个命中模型的 `/v1/models`
-///     承载家里（全部账号成员看自己；指定账号成员看账号所属的家）—— 与转发
-///     实际候选（`forwarding_providers` 的承载家）同一口径；
+///   · 成员承接数：按**选链语义**算 —— 模型命中某条链的键时只有这条链的成员
+///     出力（与 `ResolvedGroup::members_for` 一致），只经模式命中时全部链成员
+///     并集出力；成员对应的平台出现在该模型的承载家里才计一笔；
 ///   · `orphanPatterns`：目录里没有任何模型被它命中的模式（写错了 / 模型
 ///     已下线）—— 这种模式永远不会接住请求，界面据此提示；
-///   · `unservedMembers`：承接数为 0 的成员 —— 它的请求一条也落不到
-///     （平台不提供这些模型，或账号已不存在）。
+///   · `unservedMembers`：承接数为 0 的链成员 —— 它的请求一条也落不到。
 fn coverage_json(
     models: &[Value],
     account_index: &HashMap<String, Value>,
     patterns: &[String],
-    normalized_keys: &[String],
-    members: &[GroupMember],
+    chains: &[Chain],
 ) -> Value {
     // 命中模型清单上限：模式写得很宽（如 `*`）时全量带上会把响应撑大，
     // 前 50 条 + 总数已经够回答「接住了什么」。
     const MATCH_CAP: usize = 50;
-    // 成员 → 该成员对应的平台（指定账号取账号记录上的 provider；查不到 = 空串，
-    // 承接数恒 0 —— 账号已不存在，界面另有 missing 标记）
-    let member_providers: Vec<(String, String)> = members
+    // 链成员 → (稳定键, 对应平台)（指定账号取账号记录上的 provider；查不到 =
+    // 空串，承接数恒 0 —— 账号已不存在，界面另有 missing 标记）
+    let chain_members: Vec<(String, String)> = chains
         .iter()
-        .map(|member| {
-            let provider = match member {
-                GroupMember::Provider { id, .. } => id.clone(),
-                GroupMember::Account(id) => account_index
-                    .get(id)
-                    .and_then(|account| account.get("provider"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-            };
-            (member_key(member), provider)
+        .flat_map(|chain| {
+            chain.members.iter().map(move |member| {
+                (chain_member_key(&chain.key, member), member_provider(member, account_index))
+            })
         })
         .collect();
-    let member_provider_set: std::collections::HashSet<&str> =
-        member_providers.iter().map(|(_, provider)| provider.as_str()).collect();
+    // 模式路径（没有专属链）出力的成员 = 全部链成员按稳定键去重的并集
+    let union_members: Vec<(String, String)> = {
+        let mut out: Vec<(String, String)> = Vec::new();
+        let mut seen: HashMap<&str, ()> = HashMap::new();
+        for (key, provider) in &chain_members {
+            // 稳定键去掉 `chain:<key>|` 前缀 = 成员本体键；同本体只算首次
+            let body = key.split('|').nth(1).unwrap_or(key);
+            if seen.insert(body, ()).is_none() {
+                out.push((key.clone(), provider.clone()));
+            }
+        }
+        out
+    };
     let mut matched: Vec<Value> = Vec::new();
     let mut matched_count = 0usize;
     let mut serves: HashMap<String, usize> = HashMap::new();
@@ -455,42 +374,28 @@ fn coverage_json(
             continue;
         }
         let key = crate::server::core::models::merge_key(&id);
-        let hit = patterns.iter().any(|pattern| routing_groups::pattern_matches(pattern, &id))
-            || (!key.is_empty() && normalized_keys.iter().any(|known| *known == key));
-        if !hit {
-            continue;
-        }
-        matched_count += 1;
-        let carriers: Vec<String> = model
-            .get("providers")
-            .and_then(Value::as_array)
-            .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
-            .unwrap_or_default();
-        for (key, provider) in &member_providers {
-            if !provider.is_empty() && carriers.iter().any(|carrier| carrier == provider) {
-                *serves.entry(key.clone()).or_default() += 1;
+        let chain_hit = if key.is_empty() {
+            None
+        } else {
+            chains.iter().find(|chain| chain.key == key)
+        };
+        // 本次出力成员：命中专属链 = 只有这条链；否则（模式命中）= 并集。
+        let serving: Vec<(String, String)> = match chain_hit {
+            Some(chain) => chain_members
+                .iter()
+                .filter(|(member_key, _)| member_key.starts_with(&format!("chain:{}|", chain.key)))
+                .cloned()
+                .collect(),
+            None => {
+                if !patterns.iter().any(|pattern| routing_groups::pattern_matches(pattern, &id)) {
+                    continue;
+                }
+                union_members.clone()
             }
-        }
-        if matched.len() < MATCH_CAP {
-            let carrier_json: Vec<Value> = model
-                .get("providers")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(|provider| {
-                            json!({
-                                "id": provider,
-                                "label": crate::server::core::providers::label_of(provider),
-                                "member": member_provider_set.contains(provider),
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            matched.push(json!({ "id": id, "carriers": carrier_json }));
-        }
+        };
+        matched_count += 1;
+        count_serves(model, &serving, &mut serves);
+        push_matched(model, &chain_members, &mut matched, MATCH_CAP);
     }
     // 空转项
     let orphan_patterns: Vec<Value> = patterns
@@ -503,11 +408,11 @@ fn coverage_json(
         .cloned()
         .map(Value::String)
         .collect();
-    let member_serves: Vec<Value> = member_providers
+    let member_serves: Vec<Value> = chain_members
         .iter()
         .map(|(key, _)| json!({ "key": key, "serves": serves.get(key).copied().unwrap_or(0) }))
         .collect();
-    let unserved: Vec<Value> = member_providers
+    let unserved: Vec<Value> = chain_members
         .iter()
         .filter(|(key, _)| serves.get(key).copied().unwrap_or(0) == 0)
         .map(|(key, _)| Value::String(key.clone()))
@@ -522,35 +427,98 @@ fn coverage_json(
     })
 }
 
-/// 成员在视图 / 预览里的稳定键（`provider:id` / `account:id`）——
-/// 前端按它把成员行与 `memberServes` / `unservedMembers` 对上号。
+/// 一条模型的承载家 ∩ 成员 → 各成员 serves +1
+fn count_serves(model: &Value, members: &[(String, String)], serves: &mut HashMap<String, usize>) {
+    let carriers: Vec<String> = model
+        .get("providers")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect())
+        .unwrap_or_default();
+    for (key, provider) in members {
+        if !provider.is_empty() && carriers.iter().any(|carrier| carrier == provider) {
+            *serves.entry(key.clone()).or_default() += 1;
+        }
+    }
+}
+
+/// matched 明细（前 MATCH_CAP 条）：承载家 + 该承载家在本组里是不是成员
+fn push_matched(
+    model: &Value,
+    chain_members: &[(String, String)],
+    matched: &mut Vec<Value>,
+    cap: usize,
+) {
+    if matched.len() >= cap {
+        return;
+    }
+    let id = crate::server::core::models::model_id(model);
+    let carrier_json: Vec<Value> = model
+        .get("providers")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|provider| {
+                    json!({
+                        "id": provider,
+                        "label": crate::server::core::providers::label_of(provider),
+                        "member": chain_members
+                            .iter()
+                            .any(|(_, member_provider)| member_provider == provider),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    matched.push(json!({ "id": id, "carriers": carrier_json }));
+}
+
+/// 成员 → 对应平台（指定账号取账号记录上的 provider；查不到给空串）
+fn member_provider(member: &GroupMember, index: &HashMap<String, Value>) -> String {
+    match member {
+        GroupMember::Provider { id, .. } => id.clone(),
+        GroupMember::Account(id) => index
+            .get(id)
+            .and_then(|account| account.get("provider"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    }
+}
+
+/// 成员的稳定键（`provider:id` / `account:id`；组内跨链去重用）
 fn member_key(member: &GroupMember) -> String {
     format!("{}:{}", member.kind(), member.id())
 }
 
-/// 全量视图：用户组（含成员展示信息）+ 自动组（只读）+ 候选表 + 两个开关。
+/// 链成员在视图 / 预览里的稳定键（`chain:<链键>|provider:id`）——
+/// 同一个成员可以出现在多条链里，承接数必须按链分开算。
+fn chain_member_key(chain_key: &str, member: &GroupMember) -> String {
+    format!("chain:{chain_key}|{}", member_key(member))
+}
+
+/// 全量视图：用户组（含链路展示信息）+ 自动组（只读）+ 候选表 + 两个开关。
 fn groups_view(state: &ServerState) -> Value {
     let store = state.store();
     let account_index = account_index(store);
     let models: Vec<Value> = candidate_models(store);
-    // 死模型自动剔除（先于一切派生计算：被剔掉的键不该再「盖住」自动组）：
-    // 平台清单 / 映射变了之后，组里勾选过的**精确名**模型可能再没有任何家
-    // 承接 —— 留着它只会画成一枚「接不到活」的空壳 chip（用户实测要求：
-    // 没有内容支撑就直接移除，不再显示空态）。剔除即落盘，界面下次读到的
-    // 就是干净配置。手写通配模式（含 `*`）**不剔**：它表达的是「将来这类
-    // 名字都算」，现在目录里没有不代表用户想删。
+    // 死链路自动剔除（先于一切派生计算：被剔掉的键不该再「盖住」自动组）：
+    // 平台清单 / 映射变了之后，链的归一化键可能再没有任何模型 —— 留着它只会
+    // 画成一枚空壳行（用户实测要求：没有内容支撑就直接移除）。剔除即落盘。
     let groups = prune_dead_models(routing_groups::list(), &models);
     let user_ids: Vec<String> = groups.iter().map(|group| group.id.clone()).collect();
-    // 自动组里已被用户组的同源键盖住的：标出来，界面就知道「这条自动组现在
+    // 自动组里已被用户组的链键盖住的：标出来，界面就知道「这条自动组现在
     // 不会生效、是被哪个组接管的」——不然会出现「自动组列着、路由却走的是
     // 用户组」这种看不出原因的观感。
     let claimed_keys: Vec<(String, String)> = groups
         .iter()
         .flat_map(|group| {
             group
-                .normalized_keys
+                .chains
                 .iter()
-                .map(|key| (key.clone(), group.name.clone()))
+                .filter(|chain| !chain.key.is_empty())
+                .map(|chain| (chain.key.clone(), group.name.clone()))
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -622,20 +590,17 @@ fn group_json(
     index: &HashMap<String, Value>,
     models: &[Value],
 ) -> Value {
-    // 成员按**存储顺序**给（那就是组内顺位）：界面渲染的列表顺序 = 实际选路顺序
-    let members: Vec<Value> = group
-        .members
+    // 链路按**存储顺序**给（那就是列表顺序）：界面渲染的列表顺序 = 实际选路顺序
+    let chains: Vec<Value> = group
+        .chains
         .iter()
-        .map(|member| member_json(member, index))
+        .map(|chain| json!({
+            "key": chain.key,
+            "providers": chain.members.iter().map(|member| member_json(member, index)).collect::<Vec<_>>(),
+        }))
         .collect();
     // 覆盖预览（卡片汇总用）：明细（matched）省略，只留计数与空转项
-    let mut coverage = coverage_json(
-        models,
-        index,
-        &group.models,
-        &group.normalized_keys,
-        &group.members,
-    );
+    let mut coverage = coverage_json(models, index, &group.patterns, &group.chains);
     if let Some(object) = coverage.as_object_mut() {
         object.remove("matched");
         object.remove("truncated");
@@ -644,24 +609,24 @@ fn group_json(
         "id": group.id,
         "name": group.name,
         "enabled": group.enabled,
-        "models": group.models,
-        "normalizedKeys": group.normalized_keys,
-        "members": members,
+        "patterns": group.patterns,
+        "chains": chains,
         "settings": settings_json(group.settings),
         // 「会不会真的生效」的判据与 `RoutingGroup::matches_model` 同一份：
-        // 启用 + 有成员 + （有模式或归一化键）
+        // 启用 + 有链路 + （有链键或有模式）
         "active": group.enabled
-            && !group.members.is_empty()
-            && (!group.models.is_empty() || !group.normalized_keys.is_empty()),
+            && !group.chains.is_empty()
+            && (!group.patterns.is_empty()
+                || group.chains.iter().any(|chain| !chain.key.is_empty())),
         "auto": false,
         // 由自动组接管来的（沿用 auto- id）：界面据此提示「删除即回到自动识别」
         "fromAuto": group.id.starts_with("auto-"),
-        // 覆盖预览：命中几个模型、每个成员承接几个、哪些成员/模式空转
+        // 覆盖预览：命中几个模型、每个链成员承接几个、哪些成员/模式空转
         "coverage": coverage,
     })
 }
 
-/// 一条成员的展示形态：全部账号带账号数（与组内顺序覆盖），指定账号带
+/// 一条成员的展示形态：全部账号带账号数（与链内顺序覆盖），指定账号带
 /// 名字 / 平台；找不到的标出来。
 fn member_json(member: &GroupMember, index: &HashMap<String, Value>) -> Value {
     match member {
@@ -669,7 +634,7 @@ fn member_json(member: &GroupMember, index: &HashMap<String, Value>) -> Value {
             "type": "provider",
             "id": id,
             "label": crate::server::core::providers::label_of(id),
-            // 组内优先顺序的覆盖（界面拖拽维护；空数组 = 未点名的账号按全局优先级）
+            // 链内优先顺序的覆盖（界面拖拽维护；空数组 = 未点名的账号按全局优先级）
             "accounts": accounts,
             "missing": kind_from_id(id).is_none()
                 && !crate::server::core::custom_providers::is_custom_provider_id(id),
@@ -738,40 +703,17 @@ fn object_body(body: &Bytes) -> Result<Map<String, Value>, Response> {
 /// create 的整份字段（name 必填；其余各自带缺省）。
 struct CreateFields {
     name: String,
-    models: Vec<String>,
-    normalized_keys: Vec<String>,
-    members: Vec<GroupMember>,
+    patterns: Vec<String>,
+    chains: Vec<Chain>,
     settings: RoutingGroupSettings,
 }
 
 fn parse_fields(object: &Map<String, Value>) -> Result<CreateFields, Response> {
     let name = required_name(object)?;
-    let models = string_list(object, "models")?;
-    let members = members_of(object)?;
+    let patterns = string_list(object, "patterns")?;
+    let chains = chains_of(object)?;
     let settings = settings_of(object, RoutingGroupSettings::default())?;
-    let normalized_keys = match object.get("normalizedKeys") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(value) => match value.as_array() {
-            Some(items) => {
-                let mut keys: Vec<String> = Vec::new();
-                for item in items {
-                    let Some(text) = item.as_str() else {
-                        return Err(errors::management_error(400, "normalizedKeys 必须是字符串数组"));
-                    };
-                    let text = text.trim();
-                    if text.chars().count() > ITEM_MAX_CHARS {
-                        return Err(errors::management_error(400, "normalizedKeys 里有超长的条目"));
-                    }
-                    if !text.is_empty() && !keys.iter().any(|known| known == text) {
-                        keys.push(text.to_string());
-                    }
-                }
-                keys
-            }
-            None => return Err(errors::management_error(400, "normalizedKeys 必须是字符串数组")),
-        },
-    };
-    Ok(CreateFields { name, models, normalized_keys, members, settings })
+    Ok(CreateFields { name, patterns, chains, settings })
 }
 
 fn required_name(object: &Map<String, Value>) -> Result<String, Response> {
@@ -796,7 +738,7 @@ fn required_name_from(name: &str) -> Result<String, Response> {
     Ok(name.to_string())
 }
 
-/// 字符串数组字段的解析与校验（`models` 共用）。
+/// 字符串数组字段的解析与校验（`patterns` 共用）。
 ///
 /// 空数组**合法**：组配置原样保存、`active = false`（界面标「未生效」）。
 /// 这比在写侧拒绝「清空最后一个模式」宽容 —— 用户可能想先建一个空壳组，
@@ -836,25 +778,68 @@ fn string_list(object: &Map<String, Value>, key: &str) -> Result<Vec<String>, Re
     Ok(result)
 }
 
-/// 成员表的解析与校验（顺序保留 = 组内顺位）。
+/// 链路表的解析与校验（顺序保留 = 列表顺序；链内 providers 顺序 = 链内顺位）。
 ///
-/// 条目 `{type: "provider"|"account", id}`（`provider` 可另带 `accounts`
-/// 组内优先顺序表）：`type` 缺失按 `account` 兜底（与存储层同一容错口径）。
-/// 全部账号成员校验 provider 已注册 —— 打错一个字会让它静默不生效，那是纯粹
-/// 的手误；`accounts` 里的账号 id 与指定账号成员都不校验存在性（删号 / 改 id
-/// 后那条成员自然落空，界面另有 missing 标记，见模块头）。
-/// 同一条（同 type 同 id）去重，保留首次出现的位置。
-fn members_of(object: &Map<String, Value>) -> Result<Vec<GroupMember>, Response> {
-    let Some(value) = object.get("members") else {
+/// 条目 `{key?, providers: [...]}`：`providers` 里成员校验与去重口径同旧
+/// `members_of`（provider 注册校验、同成员去重）；`key` 可空（兜底链），
+/// 非空时按首次出现去重 —— 同一个键两条链没有意义（选链永远命中第一条）。
+fn chains_of(object: &Map<String, Value>) -> Result<Vec<Chain>, Response> {
+    let Some(value) = object.get("chains") else {
         return Ok(Vec::new());
     };
     let Some(items) = value.as_array() else {
-        return Err(errors::management_error(400, "members 必须是数组"));
+        return Err(errors::management_error(400, "chains 必须是数组"));
     };
     if items.len() > LIST_MAX_ITEMS {
         return Err(errors::management_error(
             400,
-            format!("members 条数过多（最多 {LIST_MAX_ITEMS} 条）"),
+            format!("chains 条数过多（最多 {LIST_MAX_ITEMS} 条）"),
+        ));
+    }
+    let mut result: Vec<Chain> = Vec::new();
+    for item in items {
+        let Some(record) = item.as_object() else {
+            return Err(errors::management_error(400, "chains 的每一项必须是 {key, providers} 对象"));
+        };
+        let key = match record.get("key") {
+            None | Some(Value::Null) => String::new(),
+            Some(Value::String(text)) => {
+                let text = text.trim();
+                if text.chars().count() > ITEM_MAX_CHARS {
+                    return Err(errors::management_error(400, "chains 里有超长的 key"));
+                }
+                text.to_string()
+            }
+            Some(_) => return Err(errors::management_error(400, "chains 的 key 必须是字符串")),
+        };
+        if !key.is_empty() && result.iter().any(|chain| chain.key == key) {
+            continue; // 同键第二条：跳过（选链语义下它永远不会被用到）
+        }
+        let Some(providers) = record.get("providers").and_then(Value::as_array) else {
+            return Err(errors::management_error(400, "chains 的每一项必须带 providers 数组"));
+        };
+        let members = members_of_items(providers)?;
+        if members.is_empty() {
+            continue; // 空成员的链接不住请求，整条跳过（与存储层 Chain::from_value 同口径）
+        }
+        result.push(Chain { key, members });
+    }
+    Ok(result)
+}
+
+/// 成员数组的解析与校验（`chains[].providers` 用；顺序保留 = 链内顺位）。
+///
+/// 条目 `{type: "provider"|"account", id}`（`provider` 可另带 `accounts`
+/// 链内优先顺序表）：`type` 缺失按 `account` 兜底（与存储层同一容错口径）。
+/// 全部账号成员校验 provider 已注册 —— 打错一个字会让它静默不生效，那是纯粹
+/// 的手误；`accounts` 里的账号 id 与指定账号成员都不校验存在性（删号 / 改 id
+/// 后那条成员自然落空，界面另有 missing 标记，见模块头）。
+/// 同一条（同 type 同 id）去重，保留首次出现的位置。
+fn members_of_items(items: &[Value]) -> Result<Vec<GroupMember>, Response> {
+    if items.len() > LIST_MAX_ITEMS {
+        return Err(errors::management_error(
+            400,
+            format!("providers 条数过多（最多 {LIST_MAX_ITEMS} 条）"),
         ));
     }
     let mut result: Vec<GroupMember> = Vec::new();
@@ -862,7 +847,7 @@ fn members_of(object: &Map<String, Value>) -> Result<Vec<GroupMember>, Response>
         let Some(record) = item.as_object() else {
             return Err(errors::management_error(
                 400,
-                "members 的每一项必须是 {type, id} 对象",
+                "providers 的每一项必须是 {type, id} 对象",
             ));
         };
         let id = record
@@ -871,10 +856,10 @@ fn members_of(object: &Map<String, Value>) -> Result<Vec<GroupMember>, Response>
             .map(str::trim)
             .unwrap_or("");
         if id.is_empty() {
-            return Err(errors::management_error(400, "members 里有缺少 id 的条目"));
+            return Err(errors::management_error(400, "providers 里有缺少 id 的条目"));
         }
         if id.chars().count() > ITEM_MAX_CHARS {
-            return Err(errors::management_error(400, "members 里有超长的 id"));
+            return Err(errors::management_error(400, "providers 里有超长的 id"));
         }
         let member = match record.get("type").and_then(Value::as_str) {
             Some("provider") => {
@@ -900,8 +885,8 @@ fn members_of(object: &Map<String, Value>) -> Result<Vec<GroupMember>, Response>
     Ok(result)
 }
 
-/// 「全部账号」成员的组内优先顺序表（`accounts`）：缺省 = 空（= 未点名，
-/// 按全局优先级）。去重、丢空串，条数上限与 members 同一把尺子。
+/// 「全部账号」成员的链内优先顺序表（`accounts`）：缺省 = 空（= 未点名，
+/// 按全局优先级）。去重、丢空串，条数上限与 providers 同一把尺子。
 fn account_order_of(record: &Map<String, Value>) -> Result<Vec<String>, Response> {
     let Some(value) = record.get("accounts") else {
         return Ok(Vec::new());
@@ -1038,17 +1023,22 @@ fn settings_of(
 #[cfg(test)]
 mod prune_tests {
     use super::*;
-    use crate::server::core::routing_groups::GroupMember;
     use serde_json::json;
 
-    fn group(models: &[&str], keys: &[&str]) -> routing_groups::RoutingGroup {
+    fn chain(key: &str) -> Chain {
+        Chain {
+            key: key.to_string(),
+            members: vec![GroupMember::Provider { id: "workbuddy".into(), accounts: vec![] }],
+        }
+    }
+
+    fn group(patterns: &[&str], keys: &[&str]) -> routing_groups::RoutingGroup {
         routing_groups::RoutingGroup {
             id: "g1".into(),
             name: "测试组".into(),
             enabled: true,
-            models: models.iter().map(|name| name.to_string()).collect(),
-            normalized_keys: keys.iter().map(|key| key.to_string()).collect(),
-            members: vec![GroupMember::Provider { id: "workbuddy".into(), accounts: vec![] }],
+            patterns: patterns.iter().map(|item| item.to_string()).collect(),
+            chains: keys.iter().map(|key| chain(key)).collect(),
             settings: RoutingGroupSettings::default(),
         }
     }
@@ -1057,52 +1047,32 @@ mod prune_tests {
         json!({ "id": id, "mergeKey": key })
     }
 
-    /// 目录里消失的精确名连同它的同源键一起被剔；活着的不动
-    /// （fixture 用真实推导：键 = merge_key(模型名)，「gone-model」的键就是它自己）
+    /// 目录里消失的键：整条链删；活着的链不动
     #[test]
-    fn dead_exact_model_and_its_key_are_dropped() {
+    fn dead_chain_is_dropped() {
         let catalog = vec![catalog_item("glm-5.3-flash", "glm-5-3-flash")];
-        let groups = vec![group(
-            &["glm-5.3-flash", "gone-model"],
-            &["glm-5-3-flash", "gone-model"],
-        )];
+        let groups = vec![group(&[], &["glm-5-3-flash", "gone-key"])];
         let pruned = prune_dead_models(groups, &catalog);
-        assert_eq!(pruned[0].models, vec!["glm-5.3-flash".to_string()]);
-        assert_eq!(pruned[0].normalized_keys, vec!["glm-5-3-flash".to_string()]);
+        assert_eq!(pruned[0].chains.len(), 1);
+        assert_eq!(pruned[0].chains[0].key, "glm-5-3-flash");
     }
 
-    /// 通配模式永远不剔（「将来这类名字都算」是显式意图）
+    /// 通配模式与空键兜底链永远不删（「将来这类名字都算」是显式意图）
     #[test]
-    fn wildcard_patterns_survive() {
+    fn patterns_and_fallback_chain_survive() {
         let catalog = vec![catalog_item("glm-5.3-flash", "glm-5-3-flash")];
-        let groups = vec![group(&["gpt-5*", "deepseek-*"], &[])]
-            ;
+        let groups = vec![group(&["gpt-5*", "deepseek-*"], &[""])];
         let pruned = prune_dead_models(groups, &catalog);
-        assert_eq!(pruned[0].models.len(), 2);
+        assert_eq!(pruned[0].patterns.len(), 2);
+        assert_eq!(pruned[0].chains.len(), 1);
     }
 
-    /// 键只删「由被剔精确名推导」的：目录里还活着的键、以及没有对应精确名的
-    /// 键（接管自动组带来的）都不动
+    /// 全部链都死了 → 组只剩模式（active 判据在 group_json 里，这里只验剔除本身）
     #[test]
-    fn keys_without_a_dropped_source_are_kept() {
-        let catalog = vec![
-            catalog_item("glm-5.3-flash", "glm-5-3-flash"),
-            catalog_item("other-model", "other-key"),
-        ];
-        let groups = vec![group(&["gone-model"], &["glm-5-3-flash", "other-key", "auto-only-key"])]
-            ;
+    fn all_dead_chains_drop_to_empty() {
+        let catalog = vec![catalog_item("other-model", "other-key")];
+        let groups = vec![group(&[], &["gone-a", "gone-b"])];
         let pruned = prune_dead_models(groups, &catalog);
-        assert!(pruned[0].models.is_empty());
-        assert_eq!(pruned[0].normalized_keys, vec!["glm-5-3-flash", "other-key", "auto-only-key"]);
-    }
-
-    /// 大小写与首尾空白不影响判活（目录名与组里的模式写法可以不同）
-    #[test]
-    fn alive_check_is_case_and_space_insensitive() {
-        let catalog = vec![catalog_item("DeepSeek-V4.1-Flash", "deepseek-v4-1-flash")];
-        let groups = vec![group(&["  deepseek-v4.1-flash "], &["deepseek-v4-1-flash"])]
-            ;
-        let pruned = prune_dead_models(groups, &catalog);
-        assert_eq!(pruned[0].models.len(), 1, "活着的名不该被剔: {:?}", pruned[0].models);
+        assert!(pruned[0].chains.is_empty());
     }
 }
