@@ -38,6 +38,10 @@ import {
  *     左侧来源导航（带头像与「+ 加入全部账号」）、无查询按来源分组、有查询
  *     打分扁平；列表只列**真有这个模型的供应商**，没模型的家收在浮层底部
  *     小胶囊行。勾选模型自动维护同源键；自动识别组可整组勾选。
+ *   · **勾模型的瞬间，承载它的各家自动成为成员**（magpie 的心智：组管
+ *     「家 × 模型」层，账号池由各家自动展开，不需要再配一遍账号）；取消
+ *     勾选只回收自动加的、用户动过的永不动。成员行仍可拖拽排序、展开
+ *     点名账号（这是 magpie 没有、按用户要求保留的组内账号精修）。
  *   · **排序一律拖拽**（↑↓ 保留作备用）：成员行拖动 = 组内顺位；
  *     「全部账号」成员展开后的账号也能拖（顺序存在该成员的 `accounts` 上，
  *     没拖到的新账号排在后面，同层按账号页优先级）。
@@ -258,7 +262,7 @@ export function RoutingGroupsPanel() {
               <svg width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='1.6' strokeLinecap='round'>
                 <circle cx='5' cy='12' r='2' /><path d='M7.5 12H12' /><path d='M12 12c2.5 0 2.5-5 5-5h3' /><path d='M12 12c2.5 0 2.5 5 5 5h3' />
               </svg>
-              {t('还没有路由组。点「新建组」：选几个平台（或指定账号）当成员，再勾选它承接的模型。')}
+              {t('还没有路由组。点「新建组」：勾选要承接的模型（或自动组），提供它们的各家会自动成为成员。')}
             </div>
           ) : null}
 
@@ -694,8 +698,16 @@ function GroupEditor({
   })
   const wholeMemberOf = (provider: string) =>
     members.find(member => member.type === 'provider' && member.id === provider)
+  /**
+   * 用户**手动意图**的家（点 + 加入、动过账号范围/顺序）：勾选模型的自动
+   * 回收永远跳过它们 —— 计数只解释「自动来的」那部分，手动加的家哪怕被
+   * 某个模型同时承载，取消那个模型也不该把它带走。
+   */
+  const manualProvidersRef = React.useRef<Set<string>>(new Set())
   /** 整体替换某平台的成员（保持它原来的位置）：`all` = 全部账号 */
   const applyPlatform = (provider: string, mode: 'all' | string[]) => {
+    if (mode === 'all' || mode.length > 0) manualProvidersRef.current.add(provider)
+    else manualProvidersRef.current.delete(provider)
     setMembers(prev => {
       const index = prev.findIndex(member =>
         (member.type === 'provider' && member.id === provider)
@@ -762,15 +774,76 @@ function GroupEditor({
       member.type === 'provider' && member.id === provider ? { ...member, accounts: next } : member))
   }
 
-  // ── 模型勾选：直接增删模式（同源键随之自动更新）──
+  // ── 模型勾选 → 成员链路自动到位 ─────────────────────────────
+  // magpie 的心智：组管「家 × 模型」这一层，账号池由各家**自动展开** ——
+  // 所以勾一个模型（或整组）的瞬间，提供它的各家就该自动成为成员，用户
+  // 不需要再配一遍账号。取消勾选时只回收「自动加的、且已不再被任何已选
+  // 模型需要、且用户没动过账号范围」的成员；手动加的永不动。
+  //
+  // 引用计数：一个家可能被多个已选模型同时需要（`autoAdded` = provider →
+  // 还差几个来源在用它）。取消一个模型只减计数，归零才真的移出成员。
+  // 初值：接管自动组时它的各家本就是「自动来的」，各计 1。
+  const autoAddedRef = React.useRef<Map<string, number>>(
+    new Map(customizeInitial.providers.map(provider => [provider, 1])),
+  )
+  const carriersOf = (id: string): string[] =>
+    modelIndex.get(id.trim().toLowerCase())?.providers ?? []
+  /** 勾选/取消一批模型时同步成员（`providers` = 这批涉及的家；调用方给准，不按 id 反查） */
+  const syncMembers = (next: string[], providers: string[], adding: boolean) => {
+    setPatterns(next)
+    const counts = autoAddedRef.current
+    const addMembers: string[] = []
+    const removeMembers: string[] = []
+    for (const provider of providers) {
+      const known = members.some(member =>
+        member.type === 'provider' ? member.id === provider : providerOfAccount(member.id) === provider)
+      if (adding) {
+        // 计数代表「多少个自动来源需要这家」：已在成员里（别的模型先加的）也要 +1，
+        // 否则取消先加的那个模型时会把后来者还需要的家误删；只是不重复进 addMembers
+        counts.set(provider, (counts.get(provider) ?? 0) + 1)
+        if (!known) addMembers.push(provider)
+      } else {
+        if (manualProvidersRef.current.has(provider)) continue // 手动意图的家 → 永不动
+        const had = counts.get(provider) ?? 0
+        if (had === 0) continue // 不是自动加的（手动 + 进来的）→ 永不动
+        if (had > 1) {
+          counts.set(provider, had - 1)
+          continue // 还有别的已选模型需要它 → 留
+        }
+        counts.delete(provider)
+        // 用户在这家上点名过账号范围 → 那是手动意图，自动空壳才回收
+        if (members.some(member =>
+          member.type === 'provider' && member.id === provider && (member.accounts ?? []).length > 0)) {
+          continue
+        }
+        removeMembers.push(provider)
+      }
+    }
+    if (addMembers.length === 0 && removeMembers.length === 0) return
+    setMembers(prev => {
+      let list = prev
+      if (removeMembers.length > 0) {
+        list = list.filter(member => !(member.type === 'provider' && removeMembers.includes(member.id)))
+      }
+      const additions = addMembers
+        .filter(provider => !list.some(member => member.type === 'provider' && member.id === provider))
+        .map(provider => ({ type: 'provider' as const, id: provider, accounts: [] }))
+      return additions.length > 0 ? [...list, ...additions] : list
+    })
+  }
+
+  // ── 模型勾选：直接增删模式（同源键随之自动更新，成员链路同步到位）──
   const hasExact = (id: string) =>
     patterns.some(pattern => pattern.toLowerCase() === id.trim().toLowerCase())
   const toggleModel = (id: string) => {
-    setPatterns(prev => prev.some(pattern => pattern.toLowerCase() === id.trim().toLowerCase())
-      ? prev.filter(pattern => pattern.toLowerCase() !== id.trim().toLowerCase())
-      : [...prev, id.trim()])
+    const checked = hasExact(id)
+    const trimmed = id.trim()
+    const next = checked
+      ? patterns.filter(pattern => pattern.toLowerCase() !== trimmed.toLowerCase())
+      : [...patterns, trimmed]
+    syncMembers(next, carriersOf(trimmed), !checked)
   }
-  /** 整组勾选：组的全部变体都已选 → 全部移出；否则把缺的变体补进来 */
+  /** 整组勾选：组的全部变体都已选 → 全部移出；否则把缺的变体补进来（成员同步） */
   const toggleGroup = (groupView: RoutingAutoGroupView) => {
     // 同一组里多家可能用**一模一样的拼写**（各家真名重合）：按小写去重，
     // 否则一次勾选会把同一个名字塞进模式列表好几遍（chips 出现重复行）
@@ -780,13 +853,19 @@ function GroupEditor({
         ids.push(variant.model)
       }
     }
+    // 成员同步用**组自己的各家**（变体的 provider 字段），不按模型名反查目录 ——
+    // 各家真名拼写可能与目录聚合 id 不同，反查会漏
+    const providers = [...new Set(groupView.variants.map(variant => variant.provider))]
     const pickedAll = ids.every(id => patterns.some(pattern => pattern.toLowerCase() === id.toLowerCase()))
-    setPatterns(prev => pickedAll
-      ? prev.filter(pattern => !ids.some(id => pattern.toLowerCase() === id.toLowerCase()))
-      : [
-        ...prev,
-        ...ids.filter(id => !prev.some(pattern => pattern.toLowerCase() === id.toLowerCase())),
-      ])
+    if (pickedAll) {
+      syncMembers(
+        patterns.filter(pattern => !ids.some(id => pattern.toLowerCase() === id.toLowerCase())),
+        providers, false,
+      )
+    } else {
+      const added = ids.filter(id => !patterns.some(pattern => pattern.toLowerCase() === id.toLowerCase()))
+      syncMembers([...patterns, ...added], providers, true)
+    }
   }
   /** 同源命中（后端 preview 现算）的模型 id 集合，供选择器行标「同源命中」 */
   const matchedModelIds = React.useMemo(
@@ -905,7 +984,7 @@ function GroupEditor({
         </div>
         <div className='rg-members'>
           {members.length === 0
-            ? <div className='hint'>{t('还没有成员：在下面的选择器里点供应商行的 +（加入全部账号），或在「账号」页选指定账号）。')}</div>
+            ? <div className='hint'>{t('还没有成员：在下面的选择器里勾选模型或自动组，提供它们的各家会自动成为成员；也可点供应商行的 + 手动加入。')}</div>
             : members.map((member, index) => {
               const display = memberDisplay(member)
               const serves = servesOf(member)
