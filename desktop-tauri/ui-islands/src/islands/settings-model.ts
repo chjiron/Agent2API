@@ -251,6 +251,8 @@ export type RoutingGroupModelOption = {
   providerLabels?: string[]
   /** 归一化同源键（勾选这个模型时自动加进组的 `normalizedKeys`） */
   mergeKey?: string
+  /** 属于自动识别组（≥2 家提供归一化同名模型）：选择器据此挂「自动组」徽标 */
+  autoGroup?: boolean
 }
 
 /** 组成员选择器的账号候选（精简形态） */

@@ -58,6 +58,8 @@ type PickerRow = {
   count: number
   /** 来源 provider id（画头像） */
   provider?: string
+  /** 模型行：属于自动识别组（后端 autoGroup 现算，选择时一眼知道是跨家聚合名） */
+  autoGroup?: boolean
   /** 组行：各家变体（头像串 + 整组勾选） */
   variants?: Array<{ provider: string; providerLabel?: string; model: string }>
   /** 参与搜索的附加文本（组行 = 归一化键） */
@@ -198,6 +200,7 @@ export function ModelPicker({
           group: label,
           count: 1,
           provider: provider || undefined,
+          autoGroup: model.autoGroup === true,
         })
       })
     }
@@ -297,6 +300,10 @@ export function ModelPicker({
             : matched
               ? <Badge variant='info'>{t('同源命中')}</Badge>
               : null}
+          {/* 跨家聚合名的标记：让用户选择时就知道「这个名字不止一家有」 */}
+          {row.autoGroup && !picked
+            ? <span className='rp-note'>{t('自动组')}</span>
+            : null}
         </span>
         {row.provider
           ? <span className='rp-avatar'><ProviderAvatar provider={row.provider} label={row.group} size={18} /></span>

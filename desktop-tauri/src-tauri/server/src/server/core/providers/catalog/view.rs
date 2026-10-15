@@ -133,10 +133,11 @@ fn public_builtin_items(active: &[(ProviderKind, Vec<Value>)]) -> Vec<(String, V
                 let taken = user_groups.iter().any(|group| group.matches_model(&display));
                 let key = crate::server::core::models::merge_key(&display);
                 if !taken && keyed.by_key.get(&key).is_some_and(|v| v.len() >= 2) {
-                    object.insert(
-                        "autoGroup".to_string(),
-                        json!({ "id": super::auto_groups::group_id_for_key(&key), "key": key }),
-                    );
+                    // 布尔而不是 id 串：这个字段的唯一用途是**让人和客户端界面
+                    // 认出「这是自动跨家组的一员」**（≥2 家提供归一化同名模型，
+                    // 选它 = 某家限流时自动换别家）。id 串对选择界面毫无信息量
+                    // （用户实测反馈：标识要可见可懂，不是机器编号）。
+                    object.insert("autoGroup".to_string(), Value::Bool(true));
                 }
             }
             Some((owner, item))

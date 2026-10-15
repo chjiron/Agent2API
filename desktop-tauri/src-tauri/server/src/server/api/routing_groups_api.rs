@@ -337,6 +337,62 @@ fn candidate_models(store: &crate::server::core::account_store::AccountStore) ->
         .collect()
 }
 
+/// 死模型自动剔除：组里勾选过的**精确名**模型（不含 `*`）在当前候选目录里
+/// 没有任何家承接时，连同它的同源键一起从组里删掉；有改动就整份落盘。
+///
+/// 判据与覆盖预览同源（目录 = `candidate_models`，键 = `mergeKey`），前端不
+/// 复制规则。通配模式不剔（「将来这类名字都算」是用户的显式意图，目录暂时
+/// 没有 ≠ 想删）；`normalizedKeys` 里**没有对应精确名**的键也不动（接管自动组
+/// 带来的键、或用户手改的键 —— 静默删别人的配置比留一枚空壳 chip 更糟）。
+fn prune_dead_models(
+    mut groups: Vec<routing_groups::RoutingGroup>,
+    catalog_models: &[Value],
+) -> Vec<routing_groups::RoutingGroup> {
+    // 目录里全部精确名（小写）与全部同源键 —— 一次建表，逐组查
+    let alive_names: std::collections::HashSet<String> = catalog_models
+        .iter()
+        .map(|item| crate::server::core::models::model_id(item).to_lowercase())
+        .collect();
+    let alive_keys: std::collections::HashSet<String> = catalog_models
+        .iter()
+        .filter_map(|item| item.get("mergeKey").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let mut changed = false;
+    for group in groups.iter_mut() {
+        let mut dropped_keys: Vec<String> = Vec::new();
+        let before = group.models.len();
+        group.models.retain(|pattern| {
+            if pattern.contains('*') {
+                return true;
+            }
+            let alive = alive_names.contains(&pattern.trim().to_lowercase());
+            if !alive {
+                // 该精确名自己的同源键一并作废（勾选模型时是成对维护的）
+                let key = crate::server::core::models::merge_key(pattern);
+                if !key.is_empty() && !dropped_keys.contains(&key) {
+                    dropped_keys.push(key);
+                }
+            }
+            alive
+        });
+        if !dropped_keys.is_empty() {
+            group.normalized_keys.retain(|key| {
+                // 只删「由被剔的精确名推导出来」的键：目录里还活着的键不动
+                !(dropped_keys.contains(key) && !alive_keys.contains(key))
+            });
+        }
+        changed |= group.models.len() != before;
+    }
+    if changed {
+        if let Err(message) = routing_groups::save_all(&groups) {
+            // 落盘失败只影响「下次还要再剔一遍」，不影响这次返回的干净视图
+            crate::server::logging::verbose("[RoutingGroups]", &format!("死模型剔除落盘失败: {message}"));
+        }
+    }
+    groups
+}
+
 /// 覆盖预览：命中模型清单 + 每个成员能承接几个 + 空转项。
 ///
 /// ── 判据（与选路同源，不是另写一套）──────────────────────────
@@ -465,8 +521,15 @@ fn member_key(member: &GroupMember) -> String {
 /// 全量视图：用户组（含成员展示信息）+ 自动组（只读）+ 候选表 + 两个开关。
 fn groups_view(state: &ServerState) -> Value {
     let store = state.store();
-    let groups = routing_groups::list();
     let account_index = account_index(store);
+    let models: Vec<Value> = candidate_models(store);
+    // 死模型自动剔除（先于一切派生计算：被剔掉的键不该再「盖住」自动组）：
+    // 平台清单 / 映射变了之后，组里勾选过的**精确名**模型可能再没有任何家
+    // 承接 —— 留着它只会画成一枚「接不到活」的空壳 chip（用户实测要求：
+    // 没有内容支撑就直接移除，不再显示空态）。剔除即落盘，界面下次读到的
+    // 就是干净配置。手写通配模式（含 `*`）**不剔**：它表达的是「将来这类
+    // 名字都算」，现在目录里没有不代表用户想删。
+    let groups = prune_dead_models(routing_groups::list(), &models);
     let user_ids: Vec<String> = groups.iter().map(|group| group.id.clone()).collect();
     // 自动组里已被用户组的同源键盖住的：标出来，界面就知道「这条自动组现在
     // 不会生效、是被哪个组接管的」——不然会出现「自动组列着、路由却走的是
@@ -493,7 +556,6 @@ fn groups_view(state: &ServerState) -> Value {
         .collect();
     let settings = config::routing_settings();
     let accounts: Vec<Value> = account_index.values().cloned().collect();
-    let models: Vec<Value> = candidate_models(store);
     json!({
         "groups": groups.iter()
             .map(|group| group_json(group, &account_index, &models))
@@ -961,4 +1023,76 @@ fn settings_of(
         config::ROUTING_BREAKER_MAX_SUCCESS,
     )?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod prune_tests {
+    use super::*;
+    use crate::server::core::routing_groups::GroupMember;
+    use serde_json::json;
+
+    fn group(models: &[&str], keys: &[&str]) -> routing_groups::RoutingGroup {
+        routing_groups::RoutingGroup {
+            id: "g1".into(),
+            name: "测试组".into(),
+            enabled: true,
+            models: models.iter().map(|name| name.to_string()).collect(),
+            normalized_keys: keys.iter().map(|key| key.to_string()).collect(),
+            members: vec![GroupMember::Provider { id: "workbuddy".into(), accounts: vec![] }],
+            settings: RoutingGroupSettings::default(),
+        }
+    }
+
+    fn catalog_item(id: &str, key: &str) -> Value {
+        json!({ "id": id, "mergeKey": key })
+    }
+
+    /// 目录里消失的精确名连同它的同源键一起被剔；活着的不动
+    /// （fixture 用真实推导：键 = merge_key(模型名)，「gone-model」的键就是它自己）
+    #[test]
+    fn dead_exact_model_and_its_key_are_dropped() {
+        let catalog = vec![catalog_item("glm-5.3-flash", "glm-5-3-flash")];
+        let groups = vec![group(
+            &["glm-5.3-flash", "gone-model"],
+            &["glm-5-3-flash", "gone-model"],
+        )];
+        let pruned = prune_dead_models(groups, &catalog);
+        assert_eq!(pruned[0].models, vec!["glm-5.3-flash".to_string()]);
+        assert_eq!(pruned[0].normalized_keys, vec!["glm-5-3-flash".to_string()]);
+    }
+
+    /// 通配模式永远不剔（「将来这类名字都算」是显式意图）
+    #[test]
+    fn wildcard_patterns_survive() {
+        let catalog = vec![catalog_item("glm-5.3-flash", "glm-5-3-flash")];
+        let groups = vec![group(&["gpt-5*", "deepseek-*"], &[])]
+            ;
+        let pruned = prune_dead_models(groups, &catalog);
+        assert_eq!(pruned[0].models.len(), 2);
+    }
+
+    /// 键只删「由被剔精确名推导」的：目录里还活着的键、以及没有对应精确名的
+    /// 键（接管自动组带来的）都不动
+    #[test]
+    fn keys_without_a_dropped_source_are_kept() {
+        let catalog = vec![
+            catalog_item("glm-5.3-flash", "glm-5-3-flash"),
+            catalog_item("other-model", "other-key"),
+        ];
+        let groups = vec![group(&["gone-model"], &["glm-5-3-flash", "other-key", "auto-only-key"])]
+            ;
+        let pruned = prune_dead_models(groups, &catalog);
+        assert!(pruned[0].models.is_empty());
+        assert_eq!(pruned[0].normalized_keys, vec!["glm-5-3-flash", "other-key", "auto-only-key"]);
+    }
+
+    /// 大小写与首尾空白不影响判活（目录名与组里的模式写法可以不同）
+    #[test]
+    fn alive_check_is_case_and_space_insensitive() {
+        let catalog = vec![catalog_item("DeepSeek-V4.1-Flash", "deepseek-v4-1-flash")];
+        let groups = vec![group(&["  deepseek-v4.1-flash "], &["deepseek-v4-1-flash"])]
+            ;
+        let pruned = prune_dead_models(groups, &catalog);
+        assert_eq!(pruned[0].models.len(), 1, "活着的名不该被剔: {:?}", pruned[0].models);
+    }
 }

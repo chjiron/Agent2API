@@ -503,6 +503,21 @@ pub fn remove(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 整份替换全部组（死模型自动剔除的落盘通道，见 `api::routing_groups_api::prune_dead_models`）。
+///
+/// 与 `add` / `update` 不同，调用方手里已经是解析过的组（剔除是纯内存操作），
+/// 这里只负责序列化回写 —— 整份替换意味着 `to_value` 必须写全每个键（硬约束
+/// 见模块头）。
+pub fn save_all(groups: &[RoutingGroup]) -> Result<(), String> {
+    let config = GroupsConfig {
+        groups: groups.to_vec(),
+    };
+    if !config.save() {
+        return Err("路由组落盘失败".to_string());
+    }
+    Ok(())
+}
+
 /// 生成 id：`g` + 时间戳十六进制 + 序号（同毫秒连续新建也不撞）。
 fn next_group_id(config: &GroupsConfig) -> String {
     let now = crate::server::logging::now_ms();
