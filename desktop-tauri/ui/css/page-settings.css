@@ -583,24 +583,169 @@
 
 /* 候选模型列表：定高滚动区，一行一个「模型 id + 平台徽标」。
    点一下加入模式（再点移出），选中态用主色浅底标出来 */
-.routing-model-picker {
+/* ─── 模型 / 路由组浮层选择器（routing-model-picker.tsx，信息架构取自 magpie 的 picker）
+   行 = 「供应商 × 模型」的对：只列真有这个模型的家；左侧供应商 / 组导航；
+   无查询 = 分组列表（段头切段），有查询 = 打分扁平结果（供应商名落到行尾注记）。
+   对齐：勾选位定宽、模型名按 46% 截断、徽标不收缩、注记靠右撑满余量 ——
+   纵向扫读时四列都在同一条基线上（旧版各行宽度随机是「对齐很奇怪」的主因）。 */
+.rp-wrap { position: relative; }
+
+/* 触发行：▸/▾ + 文案 + 已选计数，样式贴近旧目录的入口 */
+.rp-trigger {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 180px;
-  overflow: auto;
-  padding: 4px;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 9px;
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
   background: var(--surface-inset);
+  color: var(--text-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.routing-model-item {
+.rp-trigger:hover { border-color: var(--primary-bd); color: var(--text); }
+
+/* 浮层面板：锚定在触发行下方，最高 340px（贴近视口底边时向上弹，见 flipUp） */
+.rp-pop {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
   display: flex;
+  flex-direction: column;
+  max-height: 340px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+
+.rp-pop.is-up { top: auto; bottom: calc(100% + 4px); }
+
+.rp-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.rp-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.rp-search input:focus { outline: none; }
+
+/* 主体：左导航 + 右列表（导航只在宽面板有意义，窄时隐藏） */
+.rp-body { display: flex; min-height: 0; flex: 1; }
+
+.rp-rail {
+  flex: none;
+  width: 132px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-right: 1px solid var(--border);
+  overflow: auto;
+}
+
+.rp-rail-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.rp-rail-item:hover { background: var(--surface-2); color: var(--text); }
+
+/* rail 一行 = 过滤按钮 + 「+ 加入全部账号」（悬停整行时显形，与 magpie 的
+   rail 微交互同型：常态只占一个名字，不挤出行宽） */
+.rp-rail-row { position: relative; display: flex; }
+
+.rp-rail-row .rp-rail-item { flex: 1; min-width: 0; }
+
+.rp-rail-join {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.rp-rail-row:hover .rp-rail-join { opacity: 1; }
+
+.rp-rail-join:hover { border-color: var(--primary-bd); color: var(--primary); background: var(--primary-soft); }
+
+.rp-rail-item.active {
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* 导航项名字占满、计数钉右（rail 是竖排短标签，允许截断） */
+.rp-rail-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rp-rail-count { flex: none; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+.rp-list {
+  flex: 1;
+  min-width: 0;
+  padding: 4px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* 段头：大写小字距、不可点（magpie 同形态） */
+.rp-group-head {
+  padding: 6px 6px 2px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+/* 行：网格四列 —— 勾选 14px / 名字弹性截断 / 徽标自适应 / 注记定宽靠右。
+   名字与注记都 min-width:0 才截得出；注记永不换行。 */
+.rp-row {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto minmax(0, 38%);
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 4px 7px;
+  padding: 4px 6px;
   border: 1px solid transparent;
   border-radius: var(--r-sm);
   background: transparent;
@@ -610,16 +755,33 @@
   cursor: pointer;
 }
 
-.routing-model-item:hover { background: var(--surface-2); }
+.rp-row:hover { background: var(--surface-2); }
 
-.routing-model-item.is-picked {
+.rp-row.is-picked {
   border-color: var(--primary-bd);
   background: var(--primary-soft);
 }
 
-.routing-model-id {
-  flex: none;
-  max-width: 60%;
+.rp-check {
+  grid-column: 1;
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+  color: var(--primary);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.rp-row.is-picked .rp-check { border-color: var(--primary-bd); background: var(--primary-soft); }
+
+.rp-id {
+  grid-column: 2;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -627,18 +789,35 @@
   font-size: 11.5px;
 }
 
-/* 平台徽标行（模型 / 账号候选共用）：贴着右侧、**永不换行** ——
-   组件层已按上限截断（多余的收成 `+N`，完整清单在 title 里），
-   这里再钉住不换行：多平台时换行会把行撑高、溢出列表可视区（曾经的毛病）。 */
-.routing-platforms {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 4px;
-  margin-left: auto;
+.rp-badges { grid-column: 3; display: inline-flex; align-items: center; gap: 4px; }
+
+.rp-note {
+  grid-column: 4;
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  color: var(--text-3);
+  font-size: 11px;
 }
+
+/* 没有模型的平台：收在列表底部一行，点名字仍可加入成员（不进导航、不占行） */
+.rp-modelless {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px;
+  margin-top: 2px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .rp-rail { display: none; }
+}
+
 
 /* ─── 成员编辑器（有序：整家 / 指定账号混排，上下移调顺位）──── */
 
@@ -822,62 +1001,8 @@
 
 .routing-pattern-input:focus { outline: none; }
 
-/* 「从目录选择」：一行一个**平台行**（收起时只占一行，点开才展开它的模型；
-   搜索时换成跨平台的扁平结果行）—— 旧版按平台分组的卡片框在平台/模型多时
-   会堆成一大片，这里全部拍平。 */
-.routing-dir {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-height: 280px;
-  overflow: auto;
-  padding: 4px;
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  background: var(--surface-inset);
-}
-
-/* 一行平台：左边是可点的展开区（箭头 + 平台名 + 模型数），右边是
-   「成员」徽章或「加入全部账号」按钮 */
-.routing-dir-platform {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 1px 4px;
-  border-radius: var(--r-sm);
-}
-
-.routing-dir-platform:hover { background: var(--surface-2); }
-
-.routing-dir-toggle {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 2px;
-  border: 0;
-  border-radius: var(--r-sm);
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-}
-
-.routing-dir-caret {
-  flex: none;
-  width: 10px;
-  color: var(--text-3);
-  font-size: 10px;
-}
-
-.routing-dir-label {
-  flex: none;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 620;
-}
+/* 成员「账号」范围行（拖拽排序 / 勾选）：行样式与旧目录同源，浮层选择器
+   用的是 .rp-* 一套，这里只留账号范围展开还在用的三件。 */
 
 /* 目录里的模型行：勾选框 + id +（搜索时的）平台名 + 状态徽章 */
 .routing-dir-model {
