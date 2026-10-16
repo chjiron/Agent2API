@@ -14,8 +14,12 @@
 
 use serde_json::Value;
 
-/// 默认仓库（本项目的上游）；fork 后可自行覆盖（Node 版 DEFAULT_REPO）
-pub const DEFAULT_REPO: &str = "aimod-cc/agent2api";
+/// 默认仓库：本 fork 自己的发布仓库（更新检查只认这里的 Release）。
+///
+/// 不要指回上游 —— 本版功能比上游多，更新检查若看到上游的更高版本会引导
+/// 用户装回上游原版，二次开发的改动全部丢失。运行期仍可用
+/// `WORKBUDDY_UPDATE_REPO` 覆盖。
+pub const DEFAULT_REPO: &str = "chjiron/Agent2API";
 
 /// GitHub API 根（Node 版 GITHUB_API）—— [`api_base`] 的默认值
 pub const GITHUB_API: &str = "https://api.github.com";
